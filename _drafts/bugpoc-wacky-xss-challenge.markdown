@@ -203,7 +203,7 @@ function popup() {
 We make sure to call `window.open()` in an `onclick()` handler, because if the
 popup doesn't result from a click then it would be blocked by default.
 
-### Bypassing the CSP
+### Bypassing CSP
 
 Out of the two injection points we've found, only the first one, between the
 `<title>` tags, is not escaped. Normaly we could just close the `<title>` tag
@@ -240,7 +240,7 @@ We also need to make sure our `frame-analytics.js` file is returned with an
 `Access-Control-Allow-Origin: *` header. This is, I believe, because the
 `<script>` tag has `crossorigin` set to `anonymous`.
 
-### Bypassing the integrity check
+### Bypassing SRI
 
 We're now faced with another issue:
 
@@ -256,9 +256,10 @@ function popup() {
 
 ![CSP]({{page.assets}}wacky.buggywebsite.com_integrity.png)
 
-The `<script>` element is created with an `integrity` attribute. It instructs
-the browser to check that the signature of the dowloaded script matches the
-signatures declared in the attribute.
+The `<script>` element is created with an `integrity` attribute. It's a feature
+known as "Subresource Integrity" that instructs the browser to check that the
+signature of the dowloaded script matches the signatures declared in the
+attribute.
 
 Since we don't have any way to make our script hash to the expected
 `8rWlnRQdot2DeuCE0IKb7kw4BhGMRbQeOITSE876IQs=` sha256, we need to a way to
@@ -352,6 +353,12 @@ We simply need to host those two webpages:
 xss = document.createElement("script");
 xss.textContent = "alert(origin)";
 parent.document.body.appendChild(xss);
+   ```
+
+   Returned with the required header:
+
+   ```http
+   Access-Control-Allow-Origin: *
    ```
 
 1. The main page:
