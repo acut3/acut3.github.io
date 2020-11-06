@@ -30,7 +30,7 @@ github_username:  acut3
 google_analytics: "G-HHCH2TT874"
 
 # Build settings
-theme: "jekyll-theme-yat"
+#theme: "jekyll-theme-yat"
 remote_theme: "jeffreytse/jekyll-theme-yat"
 plugins:
   - jekyll-feed
