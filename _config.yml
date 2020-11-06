@@ -21,7 +21,7 @@
 title: Blog - acut3
 email: nic.christin@gmail.com
 description: >- # this means to ignore newlines until "baseurl:"
-  A blog on IT Security, including CTF and Bug Bounty write-ups
+  InfoSec, CTF & Bug Bounty
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site, e.g. http://example.com
 twitter_username: acut3hack
