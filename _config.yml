@@ -30,7 +30,7 @@ twitter_username: acut3hack
 github_username:  acut3
 
 # Build settings
-theme: minima
+theme: jekyll-theme-yat
 plugins:
   - jekyll-feed
 
