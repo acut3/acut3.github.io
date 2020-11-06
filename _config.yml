@@ -27,6 +27,8 @@ url: "" # the base hostname & protocol for your site, e.g. http://example.com
 twitter_username: acut3hack
 github_username:  acut3
 
+google_analytics: "G-HHCH2TT874"
+
 # Build settings
 theme: "jekyll-theme-yat"
 remote_theme: "jeffreytse/jekyll-theme-yat"
