@@ -1,5 +1,5 @@
 ---
-layout: post
+layout: article
 title:  "BugPoC's Wacky XSS Challenge"
 categories: ctf
 tags: ctf xss
