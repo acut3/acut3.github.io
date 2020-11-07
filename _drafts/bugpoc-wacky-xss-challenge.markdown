@@ -203,7 +203,7 @@ function popup() {
 We make sure to call `window.open()` in an `onclick()` handler, because if the
 popup doesn't result from a click then it would be blocked by default.
 
-### Bypassing CSP
+### CSP Bypass
 
 Out of the two injection points we've found, only the first one, between the
 `<title>` tags, is not escaped. Normaly we could just close the `<title>` tag
@@ -240,7 +240,7 @@ We also need to make sure our `frame-analytics.js` file is returned with an
 `Access-Control-Allow-Origin: *` header. This is, I believe, because the
 `<script>` tag has `crossorigin` set to `anonymous`.
 
-### Bypassing SRI
+### SRI Bypass
 
 We're now faced with another issue:
 
@@ -286,7 +286,7 @@ overriden. But how could we set it witout an XSS? Through DOM Cloberring! Since 
 
 It will have the effect of setting `fileIntegrity.value` to the sha256 of our maicious `frame-analytics.js` file.
 
-### Bypassing the block on modal windows
+### Modal Block Bypass
 
 Let's create our file `https://acut3.xyz/files/analytics/js/frame-analytics.js`:
 
