@@ -1,6 +1,7 @@
 ---
 layout: article
-title:  "BugPoC's Wacky XSS Challenge"
+title:  "BugPoC Wacky XSS Challenge"
+image: /assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com.png
 categories: ctf
 tags: [ctf, xss, nonce, sri, dom clobbering]
 assets: /assets/bugpoc-wacky-xss-challenge/

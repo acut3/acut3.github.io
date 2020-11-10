@@ -218,6 +218,7 @@ defaults:
 ##############################
 plugins:
   - jekyll-remote-theme
+  - jekyll-seo-tag
   - jekyll-feed
   - jekyll-paginate
   - jekyll-sitemap
