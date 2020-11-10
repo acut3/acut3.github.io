@@ -127,7 +127,7 @@ Since the nonce changes randomly with every request (as it should), it
 basically means our only way to execute a payload is to insert it inside an
 existing `<script>` tag.
 
-## The path to alert()
+## The Path to alert()
 
 
 ### Making an educated guess
@@ -406,7 +406,7 @@ parent.document.body.appendChild(xss);
 The victim needs to visit our page and click on the "Click me!" link. An alert
 will pop in the new tab.
 
-## Publishing a PoC on BugPoC
+## BugPoC PoC
 
 First we need to create a [mock
 endpoint](https://bugpoc.com/testers/other/mock) that will return the fake
@@ -457,7 +457,9 @@ To summarize the different techniques that we used:
 - Once you have an XSS, everything with the same origin is in reach
 
 Also something quite unique about this challenge: it serves as the first
-interview for select Amazon Security Engineering roles, should you chose to
+interview for select Amazon Security Engineering roles, should you choose to
 apply for them. Pretty cool! While I'm not personally looking for a job, I hope
 others will have seized the opportunity and that something good will come out
 of it.
+
+* * *
