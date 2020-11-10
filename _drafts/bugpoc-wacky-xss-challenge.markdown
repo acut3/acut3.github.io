@@ -6,7 +6,7 @@ tags: [ctf, xss, nonce, sri, dom clobbering]
 assets: /assets/bugpoc-wacky-xss-challenge/
 ---
 
-Bypassing CSP and SRI with HTML injection and DOM Clobbering.
+*Bypassing CSP and SRI with HTML injection and DOM Clobbering*
 
 <!--more-->
 
@@ -29,7 +29,7 @@ is allowed because `allow-same-origin` is used in the sandboxed iframe, making
 it share its parent's origin.
 
 * Since we can't iframe `https://wacky.buggywebsite.com/frame.html`, we're
-  opening it as a new window in an `onclick()` handler on our malicous page.
+  opening it as a new window in an `onclick()` handler on our malicious page.
 The (improper) check that makes sure the page is iframed is bypassed by setting
 the name of the new window to `iframe`
 
@@ -118,19 +118,21 @@ inside our own page. This is important because it would have been a way to call
 the iframe with a `param` of our choice.
 
 Last but not least, both the top document and the iframe use the following CSP:
+
 ```
 content-security-policy: script-src 'nonce-xxxxxxxxxxxx' 'strict-dynamic'
 ```
+
 Since the nonce changes randomly with every request (as it should), it
 basically means our only way to execute a payload is to insert it inside an
 existing `<script>` tag.
 
-## Coming up with an attack
+## The path to alert()
 
 
 ### Making an educated guess
 
-The only query parameter we've found is `param` in the iframe's URL. Seaching
+The only query parameter we've found is `param` in the iframe's URL. Searching
 through the response bodies shows no use of `location`, which mean it doesn't
 seem there is any extraction of parameters from the URL on the client side. If
 there is an XSS, it is almost certainly inside the iframe, through the `param`
@@ -149,12 +151,14 @@ window.alert = function(b) {
 It redefines the `alert()` function to pop the alert as expected, and then pop
 a second alert with the following message:
 
-> Nice Job with this CTF! If you enjoyed hacking this website then you would love being an Amazon Security Engineer! Amazon was kind enough to sponsor BugPoC so we could make this challenge. Please check out their job openings!
+> Nice Job with this CTF! If you enjoyed hacking this website then you would
+> love being an Amazon Security Engineer! Amazon was kind enough to sponsor
+> BugPoC so we could make this challenge. Please check out their job openings!
 
 So, the XSS will happen inside the `https://wacky.buggywebsite.com/frame.html`
 iframe for sure, and probably through the `param` query parameter.
 
-### Controling the iframe
+### Controlling the iframe
 
 We've seen that we can't iframe `https://wacky.buggywebsite.com/frame.html`
 inside our own page, because of the `x-frame-options: SAMEORIGIN` header. But
@@ -211,9 +215,9 @@ popup doesn't result from a click then it would be blocked by default.
 ### CSP Bypass
 
 Out of the two injection points we've found, only the first one, between the
-`<title>` tags, is not escaped. Normaly we could just close the `<title>` tag
+`<title>` tags, is not escaped. Normally we could just close the `<title>` tag
 and inject our script there. However, because the CSP requires a nonce that we
-don't know, the exectution is blocked as we can see in the console:
+don't know, the execution is blocked as we can see in the console:
 
 ```js
 function popup() {
@@ -262,8 +266,8 @@ function popup() {
 ![CSP]({{page.assets}}wacky.buggywebsite.com_integrity.png)
 
 The `<script>` element is created with an `integrity` attribute. It's a feature
-known as "Subresource Integrity" that instructs the browser to check that the
-signature of the dowloaded script matches the signatures declared in the
+known as "Sub-resource Integrity" that instructs the browser to check that the
+signature of the downloaded script matches the signatures declared in the
 attribute.
 
 Since we don't have any way to make our script's sha256 match the expected
@@ -283,7 +287,8 @@ script.setAttribute('integrity', 'sha256-'+fileIntegrity.value);
 ```
 
 If `window.fileIntegrity` is already set when the script executes, it won't be
-overriden. But how could we set it witout an XSS? Through DOM Cloberring! Since we can inject arbitrary tags, we can inject an `<input>` tag:
+overridden. But how could we set it without an XSS? Through DOM Clobbering!
+Since we can inject arbitrary tags, we can inject an `<input>` tag:
 
 ```html
 <input id="fileIntegrity" value="<our_sha256>">
@@ -294,7 +299,8 @@ malicious `frame-analytics.js` file.
 
 ### Modal Block Bypass
 
-Let's create our file `https://acut3.xyz/files/analytics/js/frame-analytics.js`:
+Let's create our file
+`https://acut3.xyz/files/analytics/js/frame-analytics.js`:
 
 ```
 $ curl -gsi 'https://acut3.xyz/files/analytics/js/frame-analytics.js'
@@ -324,7 +330,7 @@ function popup() {
 }
 ```
 
-We're faced with yet anothe issue:
+We're faced with yet another issue:
 
 ![CSP]({{page.assets}}wacky.buggywebsite.com_modal.png)
 
@@ -356,7 +362,7 @@ xss.nonce = parent.document.scripts[0].nonce
 
 ### Final PoC
 
-We simply need to host those two webpages:
+We simply need to host those two web pages:
 
 1. https://acut3.xyz/files/analytics/js/frame-analytics.js:
 
@@ -397,7 +403,7 @@ parent.document.body.appendChild(xss);
    </html>
    ```
 
-The victim neeeds to visit our page and click on the "Click me!" link. An alert
+The victim needs to visit our page and click on the "Click me!" link. An alert
 will pop in the new tab.
 
 ## Publishing a PoC on BugPoC
@@ -426,10 +432,32 @@ Now the generated URL
 can be used to build the final [Front-End
 PoC](https://bugpoc.com/testers/front-end):
 
-![Fron-End PoC Generator]({{page.assets}}bugpoc.com_testers_front-end.png)
+![Front-End PoC Generator]({{page.assets}}bugpoc.com_testers_front-end.png)
 
 Click on "Publish" and share the [PoC URL](https://bugpoc.com/poc#bp-lMrf4j3L)
 and password in you HackerOne report:
 
-![Fron-End PoC Published]({{page.assets}}bugpoc.com_testers_published.png)
+![Front-End PoC Published]({{page.assets}}bugpoc.com_testers_published.png)
 
+## Final thoughts
+
+I must say I enjoyed this challenge very much. It had all the attributes that,
+in my opinion, make a good challenge:
+
+- No guesswork, just logical thinking
+- Realistic vulnerabilities that you could find in a real world scenario
+- Some lesser knows techniques that I'm sure were new to many participants
+
+To summarize the different techniques that we used:
+
+- Use `open()` when iframing is not possible
+- Inject a `<base>` tag to replace an existing script and bypass a nonce
+- Use DOM Clobbering to set a variable and alter the flow of an an existing
+  script
+- Once you have an XSS, everything with the same origin is in reach
+
+Also something quite unique about this challenge: it serves as the first
+interview for select Amazon Security Engineering roles, should you chose to
+apply for them. Pretty cool! While I'm not personally looking for a job, I hope
+others will have seized the opportunity and that something good will come out
+of it.
