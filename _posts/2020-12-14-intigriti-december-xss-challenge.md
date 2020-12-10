@@ -7,17 +7,34 @@ tags: [ctf, xss, iframe, onhashchange]
 assets: /assets/intigriti-december-xss-challenge/
 ---
 
-*Chaining simple XSS's using hashchange events*
+*Using hashchange events to control a vulnerable page and escalate an otherwise
+mostly harmless DOM XSS*
 
 <!--more-->
 
 ![Cover]({{page.assets}}cover.png)
 
+## tl;dr
+
+For those already familiar with the challenge who just want a quick rundown of
+the attack, I'll just quote the summary I included in my bug report on
+Integrity:
+
+>
+The `calc` function passes user input to `eval`, which allows an attacker to
+execute simple javascript expressions as long as they satisfy the filers in
+place. While a single `eval` can't do much because of those restrictions, it
+can be used to first install an `onhashchange` handler. By iframing the page
+and changing the hash, several simple expressions can be executed one after the
+other, while preserving the context of the previous evaluations (there is no
+page reload). Ultimately it can be used to execute arbitrary javascript.
+
 ## Recon
 
-The target at [https://challenge-1220.intigriti.io/]() is a simple calculator.
-As expected, it's controlled by clicking the buttons. But doing so also injects
-query parameters into the current URL:
+The target at
+[https://challenge-1220.intigriti.io/](https://challenge-1220.intigriti.io/) is
+a simple calculator.  As expected, it's controlled by clicking the buttons.
+Doing so also injects query parameters into the current URL:
 
 ![Omnibox]({{page.assets}}omnibox.png)
 
@@ -74,12 +91,9 @@ function getQueryVariable(variable) {
 /* -- snip -- */
 ```
 
-The code that handles the buttons and the displays have been omitted since the
-comment states it's not part of the challenge.
-
-When the page loads, the `init()` function is called. It calls
+When the page loads, the `init` function is called. It calls
 `getQueryVariable()` to extract `num1`, `num2` and `operator` from the URL, and
-then passes them to the `calc()` function. This function will eventually call
+then passes them to the `calc` function. This function will eventually call
 ``eval(`${num1}${operator}${num2}`)`` if those parameters pass the following
 sanity checks:
 
@@ -121,37 +135,37 @@ the same restrictions?
 
 Something strange can be noticed in the `getQueryVariable` function: the search
 query string that is extracted from the URL is stored in a global variable,
-`searchQueryString`, for no reason; a local variable could be used:
+`searchQueryString`, for no reason; a local variable could be used instead:
 
 ```js
 function getQueryVariable(variable) {
     window.searchQueryString = window.location.href.substr(window.location.href.indexOf("?") + 1, window.location.href.length);
 ```
 
-As a result, if we used the following URL:
+As a result, if we used this URL:
 
 ```
 https://challenge-1220.intigriti.io/?javascript:alert(document.domain)//&num1=location&operator=%3d&num2=searchQueryString
 ```
 
-Then the follow javascript would essentially be executed:
+Then we would essentiall make the page execute the following javascript:
 
 ```js
 window.searchQueryString = "javascript:alert(document.domain)//&num1=location&operator=%3d&num2=searchQueryString";
 eval("location=searchQueryString");
 ```
 
-This payload only uses allowed characters in `num1`, `operator` and `num2`, but
+This payload only uses allowed characters in `num1`, `operator` and `num2`, yet
 it executes an expression that can contain any banned character, like `:`, `(`
-and `)`. Unfortunately `location=searchQueryString` is 26 characters long and
-exceeds the 20 char limit, so we're not quite there yet.
+and `)`. Unfortunately the `location=searchQueryString` string is 26 characters
+long, which exceeds the 20 char limit. We're not quite done yet.
 
 ### Be my puppet
 
 Here comes the fun part. Early on I had the feeling that the only way to get to
-the solution would be to call `calc()` multiple times with different payloads,
-since there didn't seem to be a way to do what we want with just one `eval`,
-given the restrictions in place.
+the solution would be to call the `calc` function multiple times with different
+payloads, since there didn't seem to be a way to do what we want with just one
+`eval`, given the restrictions in place.
 
 For the longest time I thought the key was to use the first `calc()` invocation
 to set one of the window's event handler. We could either:
@@ -174,18 +188,20 @@ When the hash portion of a URL is changed, the `hashchange` even is generated
 but the page is not actually reloaded, since everything after the `#` is purely
 client-side. Luckily, `getQueryVariable()` doesn't care about hash signs, so we
 can put our entire query string behind a `#`. Our initial payload will install
-`init` as the window's `onhashchange` event handler. Then if we changed our
-payload in the hash portion of the URL, we would get another round of execution
-with our new payload. Still in the same context, since there is no reload.
+the `init` function as the window's `onhashchange` event handler. Then if we
+changed our payload in the hash portion of the URL, we would get another round
+of execution with our new payload. Still in the same context, since there is no
+reload.
 
-Fortunately the web page doesn't have any iframing protection. We can just
-iframe it, and from our own page change the hash portion of the iframe's URL
-to make it execute a payload of our choice. Each payload has to satisfy the
-controls in place, but we can chain as many as we want until we get the desired
-result. The iframe is our puppet and we're its master.
+Fortunately the web page doesn't have any framing protection. We can just
+iframe it, and from our own page change the hash portion of the iframe's URL to
+make it execute a payload of our choice. Each payload has to satisfy the sanity
+checks in place, but we can chain as many as we want until we get the desired
+result.  The iframe is our puppet and we're its master, making it execute a new
+line of our malicious script with each hash change.
 
-Here is the sequence of URLs we will use and, for each one, the relevant
-javascript that will essentially get executed:
+Here is the sequence of URLs we will use and, for each one, the piece of
+javascript that we intend the iframe to execute:
 
 1. `https://challenge-1220.intigriti.io/#?num1=onhashchange&operator=%3d&num2=init`
    ```js
@@ -242,22 +258,27 @@ function pilot() {
 I have a [PoC](https://acut3.xyz/intigriti-1220-ao56hrx42jg8/poc.html) online
 if you want to give it a try.
 
-Here a few things to note:
+Here are a few things to note:
 
 * The hash changes are done in `pilot()`, which is called as the iframe's
   `onload` handler. This is to ensure we don't change the hash before the
 initial page has been loaded completely.
 
 * The hash is changed by changing the iframe's `src` attribute, and not it's
-  `location`. Changing `frame.location` doesn't fire the `onhashchange` handler
-inside the iframe. If you know the reason for that, please ping me on twitter.
+  `location`. Changing `frame.location` doesn't seem to fire the `onhashchange`
+handler inside the iframe. If you know the reason for that, please let me know.
 
-* The first hash change is done with a delay of 0 since we know the iframe is
-  loaded completely. The second hash change is scheduled after 100ms to make
-sure the iframe's `onhashchange` handler has done its work. This is required on
-Firefox, which is is understandable, but for some reason Chrome can execute the
-exploit reliably even without this delay. Not sure why.
+* The first hash change is done without any delay since we know the iframe is
+  loaded completely. The second hash change is scheduled after a 100ms delay to
+make sure the iframe's `onhashchange` handler has had time to do its job. This
+is required on Firefox, which is is understandable, but for some reason Chrome
+can execute the exploit reliably even without this delay. Not sure why.
 
 ## Final thoughts
+
+A great challenge that showcases a beautiful way of escalating an otherwise
+weak DOM XSS. This technique was new to me and required quite a few hours of
+intense head scratching. Which of course made finding the solution even more
+statisfying!
 
 * * *
