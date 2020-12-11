@@ -148,7 +148,7 @@ As a result, if we used this URL:
 https://challenge-1220.intigriti.io/?javascript:alert(document.domain)//&num1=location&operator=%3d&num2=searchQueryString
 ```
 
-Then we would essentiall make the page execute the following javascript:
+Then we would essentially make the page execute the following javascript:
 
 ```js
 window.searchQueryString = "javascript:alert(document.domain)//&num1=location&operator=%3d&num2=searchQueryString";
@@ -279,6 +279,6 @@ can execute the exploit reliably even without this delay. Not sure why.
 A great challenge that showcases a beautiful way of escalating an otherwise
 weak DOM XSS. This technique was new to me and required quite a few hours of
 intense head scratching. Which of course made finding the solution even more
-statisfying!
+satisfying!
 
 * * *
