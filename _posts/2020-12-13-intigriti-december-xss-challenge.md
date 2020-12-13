@@ -18,7 +18,7 @@ mostly harmless DOM XSS*
 
 For those already familiar with the challenge who just want a quick rundown of
 the attack, I'll just quote the summary I included in my bug report on
-Integrity:
+Intigrity:
 
 >
 The `calc` function passes user input to `eval`, which allows an attacker to
