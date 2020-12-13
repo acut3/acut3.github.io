@@ -173,7 +173,7 @@ to set one of the window's event handler. We could either:
 * Set it to `init` to get another go at `calc()` and its coveted `eval`. The
   problem is that without a way of changing the URL's query parameters between
 rounds, it would just endlessly execute the same thing over and over again
-every time the even pops.
+every time the event pops.
 
 * Or, set it to one of the button's event handler, which do modify the query
   parameters before calling `init` again. However it doesn't give us enough
