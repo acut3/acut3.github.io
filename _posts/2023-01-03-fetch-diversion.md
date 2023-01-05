@@ -1,7 +1,7 @@
 ---
 layout: article
 title: "Fetch Diversion"
-image: /assets/fetch-diversion/cover.jpg
+image: /assets/fetch-diversion/cover.png
 categories: bug-bounty
 tags: [bug bounty, client-side, fetch diversion, xss]
 assets: /assets/fetch-diversion/
@@ -325,7 +325,7 @@ avatar as the intended response to the 3<sup>rd</sup> API call. That was
 enought to keep the application happy.
 
 I won't get into the details of the 2<sup>nd</sup> API call, but I was
-*extremely* lucky. There was another Path Diversion that was possible there,
+*extremely* lucky. There was another Fetch Diversion that was possible there,
 and I was able to divert this call toward a 2<sup>nd</sup> avatar that would
 contain a suitable response.
 
