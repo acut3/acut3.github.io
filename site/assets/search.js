@@ -1,0 +1,1 @@
+window.TEXT_SEARCH_DATA={'posts':[{'title':"BugPoC Wacky XSS Challenge",'url':"/ctf/2020/11/10/bugpoc-wacky-xss-challenge.html"},{'title':"Intigrity December XSS Challenge",'url':"/ctf/2020/12/13/intigriti-december-xss-challenge.html"},{'title':"Fetch Diversion",'url':"/bug-bounty/2023/01/03/fetch-diversion.html"}]};

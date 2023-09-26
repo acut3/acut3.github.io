@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">
-  <mask id="m">
-    <rect width="2" height="2" fill="white" />
-    <rect width="2" height="2" transform="rotate(-15,1,1)" />
-  </mask>
-  <rect width="2" height="2" mask="url(#m)" />
-</svg>
